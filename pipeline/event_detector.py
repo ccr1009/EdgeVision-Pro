@@ -15,16 +15,20 @@ def line_intersect(A, B, C, D):
 
 
 class EventDetector:
-    def __init__(self, log_path="outputs/events.log", tripwire_y=380):
+    def __init__(self, log_path="outputs/events.log", tripwire_p1=(0, 280), tripwire_p2=(1280, 280)):
         self.log_path = log_path
-        self.tripwire_p1 = (0, tripwire_y)
-        self.tripwire_p2 = (640, tripwire_y)
+        self.tripwire_p1 = tripwire_p1
+        self.tripwire_p2 = tripwire_p2
         self.track_history = {}
         self.triggered_events = set()
         
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         with open(self.log_path, "w", encoding="utf-8") as f:
             f.write(f"# EdgeVision Event Alert Log - Initialized {datetime.now().isoformat()}\n")
+
+    def set_tripwire(self, p1, p2):
+        self.tripwire_p1 = p1
+        self.tripwire_p2 = p2
 
     def update(self, active_tracks, frame_id, timestamp=None):
         current_alerts = []
@@ -51,12 +55,13 @@ class EventDetector:
                             "track_id": tid,
                             "class_id": track.class_id,
                             "score": round(float(track.score), 3),
-                            "direction": "DOWNWARDS" if curr_pos[1] > prev_pos[1] else "UPWARDS",
+                            "direction": "FORWARD" if curr_pos[1] > prev_pos[1] else "BACKWARD",
                             "position": [round(cx, 1), round(cy, 1)]
                         }
                         current_alerts.append(event)
                         self.triggered_events.add(tid)
                         self._write_event_log(event)
+                        print(f"\033[31m[EVENT DETECTED] Frame {frame_id}: Track #{tid} (Class {track.class_id}) crossed tripwire!\033[0m")
 
                 self.track_history[tid].append(curr_pos)
             else:

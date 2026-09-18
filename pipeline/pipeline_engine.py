@@ -37,7 +37,7 @@ class PipelineEngine:
 
         self.stop_event = threading.Event()
         self.tracer = LatencyTracer(window_size=100)
-        self.event_detector = EventDetector(log_path=event_log, tripwire_y=380)
+        self.event_detector = EventDetector(log_path=event_log)
 
         print(f"[*] Initializing {backend_type.upper()} inference backend...")
         if backend_type == "onnx":
@@ -46,7 +46,7 @@ class PipelineEngine:
             from .backend.rknn_backend import RKNNBackend
             self.backend = RKNNBackend(self.model_path)
 
-        self.tracker = BYTETracker(track_thresh=0.45, high_thresh=0.6, match_thresh=0.8)
+        self.tracker = BYTETracker(track_thresh=0.35, high_thresh=0.5, match_thresh=0.7)
 
     def _capture_worker(self):
         cap = cv2.VideoCapture(self.video_src)
@@ -54,6 +54,11 @@ class PipelineEngine:
             print(f"[-] Failed to open video source: {self.video_src}")
             self.stop_event.set()
             return
+
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        tripwire_y = int(h * 0.65)
+        self.event_detector.set_tripwire((0, tripwire_y), (w, tripwire_y))
 
         frame_id = 0
         while not self.stop_event.is_set():
@@ -69,7 +74,8 @@ class PipelineEngine:
             item = {
                 "frame_id": frame_id,
                 "frame": frame,
-                "t_cap": t_cap
+                "t_cap": t_cap,
+                "tripwire_y": tripwire_y
             }
 
             try:
@@ -142,6 +148,7 @@ class PipelineEngine:
             (255, 120, 0), (0, 200, 255), (100, 255, 100),
             (255, 50, 255), (255, 255, 0), (0, 150, 255)
         ]
+        recent_alerts = []
 
         while not self.stop_event.is_set():
             try:
@@ -155,16 +162,19 @@ class PipelineEngine:
             t0 = time.time()
             frame = item["frame"]
             h, w = frame.shape[:2]
+            tripwire_y = item.get("tripwire_y", int(h * 0.65))
 
             if writer is None and self.output_video:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 os.makedirs(os.path.dirname(self.output_video), exist_ok=True)
                 writer = cv2.VideoWriter(self.output_video, fourcc, 30.0, (w, h))
 
-            cv2.line(frame, (0, 380), (w, 380), (0, 255, 255), 2)
-            cv2.putText(frame, "VIRTUAL TRIPWIRE (Y=380)", (10, 370),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            # 1. Draw Tripwire line
+            cv2.line(frame, (0, tripwire_y), (w, tripwire_y), (0, 255, 255), 2)
+            cv2.putText(frame, f"VIRTUAL TRIPWIRE (Y={tripwire_y})", (10, tripwire_y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
+            # 2. Draw Active Tracks
             for track in item["tracks"]:
                 tid = track.track_id
                 tlbr = track.tlbr.astype(int)
@@ -177,10 +187,18 @@ class PipelineEngine:
                 cv2.putText(frame, label, (tlbr[0], max(15, tlbr[1] - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
+            # 3. Maintain recent alert flash
             if item["alerts"]:
                 for alert in item["alerts"]:
-                    cv2.putText(frame, f"[ALERT] TRACK #{alert['track_id']} CROSSED TRIPWIRE!",
-                                (50, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    recent_alerts.append((item["frame_id"], alert))
+            
+            # Keep alerts on screen for 25 frames
+            recent_alerts = [(f, a) for (f, a) in recent_alerts if item["frame_id"] - f < 25]
+            for idx, (f, a) in enumerate(recent_alerts):
+                alert_text = f"[ALERT] TRACK #{a['track_id']} CROSSED TRIPWIRE! ({a['direction']})"
+                cv2.rectangle(frame, (30, 50 + idx * 35), (620, 80 + idx * 35), (0, 0, 180), -1)
+                cv2.putText(frame, alert_text, (35, 72 + idx * 35),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             t_encode = (time.time() - t0) * 1000.0
 
@@ -193,8 +211,8 @@ class PipelineEngine:
             })
 
             summary = self.tracer.get_summary()
-            hud_text = f"FPS: {summary['fps']:.1f} | Infer: {summary['inference']['avg']:.1f}ms | Track: {summary['tracking']['avg']:.1f}ms"
-            cv2.putText(frame, hud_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            hud_text = f"FPS: {summary['fps']:.1f} | Infer: {summary['inference']['avg']:.1f}ms | Active Tracks: {len(item['tracks'])}"
+            cv2.putText(frame, hud_text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
             if writer:
                 writer.write(frame)
