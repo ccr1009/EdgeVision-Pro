@@ -10,8 +10,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-set(SOURCES
-    src/main.cpp
+set(COMMON_SOURCES
     src/postprocess.cpp
     src/rknn_engine.cpp
 )
@@ -22,10 +21,16 @@ if(CROSS_COMPILE_RK3588)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/rknn_api/include)
     link_directories(${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/rknn_api/lib)
 
-    add_executable(edgevision_rknn ${SOURCES})
+    add_executable(edgevision_rknn src/main.cpp ${COMMON_SOURCES})
     target_link_libraries(edgevision_rknn rknnrt pthread)
+
+    add_executable(edgevision_pro_rknn src/edgevision_pro_main.cpp ${COMMON_SOURCES})
+    target_link_libraries(edgevision_pro_rknn rknnrt pthread)
 else()
     message(STATUS "=== Configuring for x86_64 Native Simulation Host ===")
-    add_executable(edgevision_x86 ${SOURCES})
+    add_executable(edgevision_x86 src/main.cpp ${COMMON_SOURCES})
     target_link_libraries(edgevision_x86 pthread)
+
+    add_executable(edgevision_pro src/edgevision_pro_main.cpp ${COMMON_SOURCES})
+    target_link_libraries(edgevision_pro pthread)
 endif()

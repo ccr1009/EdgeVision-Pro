@@ -18,11 +18,15 @@ CLASS_NAMES = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "tra
 
 
 class PipelineEngine:
-    def __init__(self, video_src, backend_type="onnx", model_path=None, output_video=None, event_log="outputs/events.log"):
+    def __init__(self, video_src, backend_type="onnx", model_path=None, output_video=None,
+                 event_log="outputs/events.log", display=False, max_frames=None):
         self.video_src = video_src
         self.backend_type = backend_type
         self.output_video = output_video
         self.event_log = event_log
+        self.display = display
+        self.max_frames = max_frames
+        self.window_name = "EdgeVision-RK3588 (press q/ESC to quit)"
 
         if model_path is None:
             if backend_type == "onnx":
@@ -57,8 +61,9 @@ class PipelineEngine:
 
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        tripwire_y = int(h * 0.65)
-        self.event_detector.set_tripwire((0, tripwire_y), (w, tripwire_y))
+        tripwire_y = int(h * 0.65) if w > 0 and h > 0 else None
+        if tripwire_y is not None:
+            self.event_detector.set_tripwire((0, tripwire_y), (w, tripwire_y))
 
         frame_id = 0
         while not self.stop_event.is_set():
@@ -69,6 +74,11 @@ class PipelineEngine:
             if not ret:
                 print("[*] Capture reached EOF.")
                 break
+
+            if tripwire_y is None:
+                fh, fw = frame.shape[:2]
+                tripwire_y = int(fh * 0.65)
+                self.event_detector.set_tripwire((0, tripwire_y), (fw, tripwire_y))
 
             frame_id += 1
             item = {
@@ -86,6 +96,9 @@ class PipelineEngine:
                     self.frame_queue.put_nowait(item)
                 except (Empty, Full):
                     pass
+
+            if self.max_frames and frame_id >= self.max_frames:
+                self.stop_event.set()
 
         cap.release()
         self.frame_queue.put(None)
@@ -217,9 +230,19 @@ class PipelineEngine:
             if writer:
                 writer.write(frame)
 
+            if self.display:
+                cv2.imshow(self.window_name, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    self.stop_event.set()
+                    break
+
         if writer:
             writer.release()
             print(f"[+] Annotated video saved to: {self.output_video}")
+        if self.display:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
 
     def run(self):
         print("==================================================================")
@@ -232,15 +255,16 @@ class PipelineEngine:
         print("==================================================================")
 
         threads = [
-            threading.Thread(target=self._capture_worker, name="CaptureThread"),
-            threading.Thread(target=self._inference_worker, name="InferThread"),
-            threading.Thread(target=self._tracking_event_worker, name="TrackEventThread"),
-            threading.Thread(target=self._render_output_worker, name="RenderThread")
+            threading.Thread(target=self._capture_worker, name="CaptureThread", daemon=True),
+            threading.Thread(target=self._inference_worker, name="InferThread", daemon=True),
+            threading.Thread(target=self._tracking_event_worker, name="TrackEventThread", daemon=True),
         ]
 
         t_start = time.time()
         for t in threads:
             t.start()
+
+        self._render_output_worker()
 
         for t in threads:
             t.join()
