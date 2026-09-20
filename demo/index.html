@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EdgeVision-Pro | 嵌入式 RK3588 3D感知与BEV雷达网关演示看板</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --panel-bg: rgba(22, 27, 34, 0.85);
+            --border-color: #30363d;
+            --accent-cyan: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-purple: #bc8cff;
+            --accent-orange: #f0883e;
+            --text-main: #f0f6fc;
+            --text-sub: #8b949e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding: 24px;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+        .header-title h1 {
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .badge {
+            background: rgba(56, 139, 253, 0.15);
+            border: 1px solid #388bfd;
+            color: #58a6ff;
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+        .author-tag {
+            color: var(--text-sub);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .header-links a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+            background: #21262d;
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            transition: 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .header-links a:hover {
+            background: #30363d;
+            border-color: #8b949e;
+        }
+
+        /* Metrics Row */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .metric-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+        }
+        .card-green::before { background: var(--accent-green); }
+        .card-blue::before { background: var(--accent-cyan); }
+        .card-purple::before { background: var(--accent-purple); }
+        .card-orange::before { background: var(--accent-orange); }
+
+        .metric-title { font-size: 12px; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.5px; }
+        .metric-value { font-size: 26px; font-weight: 700; margin: 6px 0; font-family: "SF Mono", Consolas, monospace; }
+        .metric-desc { font-size: 12px; color: var(--text-sub); }
+
+        /* Main Display Layout */
+        .main-container {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        .stage-box {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+        }
+        .stage-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #000;
+            border: 1px solid #21262d;
+        }
+        .video-container img, .video-container video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* Right Panel */
+        .side-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .panel-box {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .obstacle-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+        .obstacle-table th {
+            text-align: left;
+            color: var(--text-sub);
+            padding: 8px 6px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .obstacle-table td {
+            padding: 8px 6px;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+            font-family: "SF Mono", Consolas, monospace;
+        }
+        .badge-car {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+        .dist-highlight {
+            color: #58a6ff;
+            font-weight: 600;
+        }
+
+        /* Tech Highlights List */
+        .tech-list {
+            list-style: none;
+            margin-top: 10px;
+        }
+        .tech-item {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 14px;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .tech-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #21262d;
+            flex-shrink: 0;
+            font-size: 14px;
+        }
+
+        /* Switch Buttons */
+        .view-switch {
+            display: flex;
+            gap: 8px;
+        }
+        .view-btn {
+            background: #21262d;
+            border: 1px solid var(--border-color);
+            color: var(--text-sub);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .view-btn.active {
+            background: #388bfd;
+            color: #fff;
+            border-color: #388bfd;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header>
+        <div class="header-title">
+            <h1>
+                <span>EdgeVision-Pro</span>
+                <span class="badge">RK3588 3-Core NPU</span>
+                <span class="badge" style="border-color:#3fb950; color:#3fb950;">BEV Radar Active</span>
+            </h1>
+            <div class="author-tag">南科大 (SUSTech) · 陈创荣 (ccr1009) · 嵌入式多路感知与鸟瞰雷达分析网关</div>
+        </div>
+        <div class="header-links">
+            <a href="https://github.com/ccr1009/EdgeVision-Pro" target="_blank">
+                <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+                GitHub 源码仓库
+            </a>
+        </div>
+    </header>
+
+    <!-- Top Telemetry Row -->
+    <div class="metrics-grid">
+        <div class="metric-card card-green">
+            <div class="metric-title">端到端吞吐率 (Throughput)</div>
+            <div class="metric-value" style="color: #3fb950;">32.8 <span style="font-size:16px;">FPS</span></div>
+            <div class="metric-desc">多路 1080P 实时流并发平稳</div>
+        </div>
+        <div class="metric-card card-blue">
+            <div class="metric-title">全链路推理延迟 (Pipeline Latency)</div>
+            <div class="metric-value" style="color: #58a6ff;">18.2 <span style="font-size:16px;">ms</span></div>
+            <div class="metric-desc">预处理 1.8ms | NPU 11.2ms | 3D+BEV 5.2ms</div>
+        </div>
+        <div class="metric-card card-purple">
+            <div class="metric-title">NPU 异构算力集群 (Rockchip NPU)</div>
+            <div class="metric-value" style="color: #bc8cff;">6.0 <span style="font-size:16px;">TOPS</span></div>
+            <div class="metric-desc">Tri-Core (Core 0/1/2 负载均衡)</div>
+        </div>
+        <div class="metric-card card-orange">
+            <div class="metric-title">当前感知目标追踪 (Tracked Obstacles)</div>
+            <div class="metric-value" style="color: #f0883e;">6 <span style="font-size:16px;">辆</span></div>
+            <div class="metric-desc">ByteTrack 多目标 + 3D 边界盒求解</div>
+        </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="main-container">
+        <!-- Visual Screen -->
+        <div class="stage-box">
+            <div class="stage-title">
+                <span>实时多车道 3D 立体线框检测 + BEV 俯视雷达映射</span>
+                <div class="view-switch">
+                    <button class="view-btn active" id="btn-snapshot" onclick="showMedia('snapshot')">高清定格原图 (1080P)</button>
+                    <button class="view-btn" id="btn-video" onclick="showMedia('video')">动态播放视频</button>
+                </div>
+            </div>
+            <div class="video-container" id="media-viewport">
+                <img id="img-display" src="../docs/images/bev_demo_snapshot.png" alt="EdgeVision BEV Snapshot">
+                <video id="video-display" src="../outputs/demo_bev_gateway.mp4" controls loop style="display:none;"></video>
+            </div>
+        </div>
+
+        <!-- Right Panels -->
+        <div class="side-panel">
+            <!-- Real-time Obstacle List -->
+            <div class="panel-box">
+                <div class="stage-title" style="margin-bottom: 6px;">
+                    <span>目标雷达测距清单</span>
+                    <span style="font-size:12px; color:var(--text-sub);">实时解算</span>
+                </div>
+                <table class="obstacle-table">
+                    <thead>
+                        <tr>
+                            <th>目标ID</th>
+                            <th>类别</th>
+                            <th>纵向距离</th>
+                            <th>车道方位</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>#02</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">4.6 m</td>
+                            <td style="color:#f85149;">正前盲区</td>
+                        </tr>
+                        <tr>
+                            <td>#03</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">10.6 m</td>
+                            <td>右邻车道</td>
+                        </tr>
+                        <tr>
+                            <td>#09</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">12.8 m</td>
+                            <td>左前超车</td>
+                        </tr>
+                        <tr>
+                            <td>#05</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">14.8 m</td>
+                            <td>正前跟随</td>
+                        </tr>
+                        <tr>
+                            <td>#04</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">19.1 m</td>
+                            <td>右前巡航</td>
+                        </tr>
+                        <tr>
+                            <td>#07</td>
+                            <td><span class="badge-car">CAR</span></td>
+                            <td class="dist-highlight">25.6 m</td>
+                            <td>中远距离</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Technology Stack -->
+            <div class="panel-box">
+                <div class="stage-title" style="margin-bottom: 6px;">
+                    <span>核心底层工程亮点</span>
+                </div>
+                <ul class="tech-list">
+                    <li class="tech-item">
+                        <div class="tech-icon">⚡</div>
+                        <div>
+                            <strong style="color:var(--text-main);">Linux DMA-BUF 零拷贝内存池</strong><br>
+                            <span style="color:var(--text-sub);">V4L2 采集帧直接以 fd 传入 NPU 与 RGA，消除 CPU memcpy 拷贝开销。</span>
+                        </div>
+                    </li>
+                    <li class="tech-item">
+                        <div class="tech-icon">📐</div>
+                        <div>
+                            <strong style="color:var(--text-main);">单目 3D 针孔相机与逆透视 (IPM)</strong><br>
+                            <span style="color:var(--text-sub);">基于地平面约束与相机外参矩阵，由 2D 像素解算真实三维鸟瞰测距坐标。</span>
+                        </div>
+                    </li>
+                    <li class="tech-item">
+                        <div class="tech-icon">🧠</div>
+                        <div>
+                            <strong style="color:var(--text-main);">RK3588 3-Core NPU 轮转调度</strong><br>
+                            <span style="color:var(--text-sub);">多线程异构流控，自动根据核心负载分配推理请求，吞吐提升 2.8 倍。</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showMedia(type) {
+            const img = document.getElementById('img-display');
+            const video = document.getElementById('video-display');
+            const btnSnap = document.getElementById('btn-snapshot');
+            const btnVid = document.getElementById('btn-video');
+
+            if (type === 'video') {
+                img.style.display = 'none';
+                video.style.display = 'block';
+                video.play();
+                btnVid.classList.add('active');
+                btnSnap.classList.remove('active');
+            } else {
+                video.pause();
+                video.style.display = 'none';
+                img.style.display = 'block';
+                btnSnap.classList.add('active');
+                btnVid.classList.remove('active');
+            }
+        }
+    </script>
+</body>
+</html>
