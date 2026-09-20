@@ -1,8 +1,9 @@
 """
 EdgeVision-Pro: 3D Perception & BEV Gateway Demo Runner
 =========================================================
-Runs full pipeline on test traffic video, rendering 3D bounding boxes,
-ByteTrack IDs, and top-down BEV radar mini-map into an annotated MP4.
+Runs full pipeline on real-world forward-facing highway traffic video,
+rendering 3D oriented bounding boxes, ByteTrack IDs, and top-down
+BEV radar mini-map into an annotated MP4 & snapshot.
 """
 
 import os
@@ -21,9 +22,11 @@ def main():
     print("==================================================================")
 
     model_path = "data/models/yolov8n.onnx"
-    video_path = "data/videos/person-bicycle-car-detection.mp4"
+    video_path = "data/videos/highway_traffic.mp4"
     output_dir = "outputs"
+    snapshot_path = "docs/images/bev_demo_snapshot.png"
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
     output_path = os.path.join(output_dir, "demo_bev_gateway.mp4")
 
     if not os.path.exists(model_path):
@@ -36,28 +39,27 @@ def main():
 
     # 1. Initialize Backend
     print(f"[*] Loading model on ONNX Runtime Backend: {model_path}")
-    backend = ONNXRuntimeBackend(model_path, conf_thresh=0.30, iou_thresh=0.45)
+    backend = ONNXRuntimeBackend(model_path, conf_thresh=0.25, iou_thresh=0.45)
 
     # 2. Open Video
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"[+] Video opened: {w}x{h} @ {fps:.1f} FPS, total {total_frames} frames")
 
-    # 3. Initialize Pipeline
-    # Calibrated for traffic/vehicle front camera: height 1.65m, pitch 8.5 deg
+    # 3. Initialize Pipeline calibrated for forward-facing dashcam
     pipeline = BEVPerceptionPipeline(
         backend=backend,
         img_w=w,
         img_h=h,
-        hfov_deg=68.0,
-        mount_height_m=1.65,
-        pitch_deg=8.5,
-        radar_size=300,
+        hfov_deg=72.0,
+        mount_height_m=1.50,
+        pitch_deg=3.5,
+        radar_size=340,
         range_fwd_m=60.0,
-        range_lat_m=18.0
+        range_lat_m=16.0
     )
 
     # 4. Setup Video Writer
@@ -69,8 +71,8 @@ def main():
     processed_count = 0
     total_infer_time = 0.0
 
-    # Process 250 frames
-    max_frames = min(250, total_frames)
+    max_frames = min(200, total_frames)
+    best_snapshot_frame = 120
 
     while cap.isOpened() and processed_count < max_frames:
         ret, frame = cap.read()
@@ -79,6 +81,11 @@ def main():
 
         annotated_frame, metrics = pipeline.process_frame(frame, channel_id=0)
         out.write(annotated_frame)
+
+        # Save the golden snapshot with 6+ vehicles and full radar blips
+        if processed_count == best_snapshot_frame:
+            cv2.imwrite(snapshot_path, annotated_frame)
+            print(f"[+] Saved flagship snapshot with {metrics['objects_3d']} 3D targets to: {snapshot_path}")
 
         processed_count += 1
         total_infer_time += metrics["infer_ms"]
@@ -105,6 +112,7 @@ def main():
     print(f"  Average FPS:      {avg_fps:.1f} FPS")
     print(f"  Avg Infer Time:   {avg_infer:.1f} ms")
     print(f"  Output Video:     {output_path} ({os.path.getsize(output_path)} bytes)")
+    print(f"  Flagship Snapshot:{snapshot_path}")
     print("==================================================================")
     return 0
 

@@ -156,7 +156,7 @@ class BEVRadarCanvas:
             tag = f"#{track_id}:{X_v:.1f}m"
             cv2.putText(
                 canvas, tag, (u_center + half_w_px + 3, v_center + 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (240, 240, 240), 1, cv2.LINE_AA
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA
             )
 
         return canvas
@@ -165,7 +165,7 @@ class BEVRadarCanvas:
         self,
         frame: np.ndarray,
         canvas: np.ndarray,
-        alpha: float = 0.88,
+        alpha: float = 1.0,
         margin: int = 16
     ) -> np.ndarray:
         """
@@ -184,7 +184,7 @@ class BEVRadarCanvas:
             return frame
 
         roi = frame[y_start:y_end, x_start:x_end]
-        blended = cv2.addWeighted(canvas, alpha, roi, 1.0 - alpha, 0)
+        blended = canvas
         frame[y_start:y_end, x_start:x_end] = blended
 
         # Draw decorative outer border
