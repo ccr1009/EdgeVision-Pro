@@ -250,6 +250,22 @@
         </div>
     </header>
 
+    <!-- !!! 数据真实性声明：这一条比页面里所有数字都重要 !!! -->
+    <div style="margin:14px 24px 0; padding:14px 18px; border:1px solid #d29922; border-left:5px solid #d29922; border-radius:6px; background:#2d2614; color:#e6d3a3; font-size:13px; line-height:1.75;">
+        <strong style="color:#f0b429;">⚠️ 本页是 PC（x86）侧的效果展示看板，不是 RK3588 板端实测</strong><br>
+        下面所有数字 —— <code>32.8 FPS</code>、<code>18.2 ms 全链路</code>、<code>预处理 1.8ms | NPU 11.2ms | 3D+BEV 5.2ms</code>、
+        <code>6 辆跟踪</code>、测距 <code>4.6m / 10.6m / 12.8m</code> —— 都来自 <b>PC 上的 ONNXRuntime 仿真链路与演示素材</b>，
+        画面素材本身也是 PC 侧渲染的。诚实的板端数字要低得多：<br>
+        <span style="color:#8b949e;">
+        · 板端纯 NPU 推理 <b style="color:#7ee787;">15.95 ms</b>（84ch 原模型 37.19 ms）&nbsp;·&nbsp;
+        全链路 <b style="color:#7ee787;">20.58 ms / 48.6 FPS</b>（含 DFL 解码+NMS）&nbsp;·&nbsp;
+        三核聚合 <b style="color:#7ee787;">59.3 FPS（2.21×）</b><br>
+        · <b style="color:#ff7b72;">尚未实现</b>：DMA-BUF 零拷贝、RGA 硬件 CSC、RTSP/WebRTC、H.264/H.265 硬解、ByteTrack 进 C++ 链路
+        </span><br>
+        板端真实数据请看 <a href="../README.md" style="color:#58a6ff;">README「板端实测基准」表</a> 与
+        <a href="../docs/BENCHMARKS.md" style="color:#58a6ff;">docs/BENCHMARKS.md</a>。
+    </div>
+
     <!-- Top Telemetry Row -->
     <div class="metrics-grid">
         <div class="metric-card card-green">
@@ -358,8 +374,8 @@
                     <li class="tech-item">
                         <div class="tech-icon">⚡</div>
                         <div>
-                            <strong style="color:var(--text-main);">Linux DMA-BUF 零拷贝内存池</strong><br>
-                            <span style="color:var(--text-sub);">V4L2 采集帧直接以 fd 传入 NPU 与 RGA，消除 CPU memcpy 拷贝开销。</span>
+                            <strong style="color:var(--text-main);">零拷贝内存池 <span style="color:#ff7b72;">（板端未实现，此处为 PC 侧设计示意）</span></strong><br>
+                            <span style="color:var(--text-sub);">设计思路：V4L2 采集帧以 fd 直传 NPU 与 RGA，省掉 CPU memcpy。板端实测走的是 CPU 侧 CSC，DMA-BUF 尚未落地。</span>
                         </div>
                     </li>
                     <li class="tech-item">

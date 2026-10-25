@@ -1,7 +1,19 @@
 """
-Hardware Zero-Copy Memory Pipeline (MPP -> RGA -> RKNN)
-==========================================================
-Models the DMA-BUF physical memory life-cycle across hardware units:
+Hardware Zero-Copy Memory Pipeline (MPP -> RGA -> RKNN) —— ⚠️ 纯软件模型，不是真实实现
+=======================================================================================
+本文件是 2026 年 8 月（板子到货前）写的**架构推演脚本**：它用 Python 类模拟 DMA-BUF 的
+生命周期，**不涉及任何真实内核驱动、不申请任何 DMA 内存、不开任何真实 fd**。
+
+现实情况（2026-10 核对代码后）：
+- RK3588 板端真实链路是 MPP 硬解 MJPEG -> **CPU 侧 CSC** -> letterbox -> NPU，
+  **没有实现** DMA-BUF 零拷贝，也没有 RGA 硬件转换（`deploy/cpp/include/zero_copy_pipeline.hpp`
+  里的 `rga_hardware_transform()` 只是改了个 bool 就返回 true，该文件已标注废弃）。
+- 下面的 `DMABuffer.fd = 1000 + buf_id` 是**模拟的 fd 编号**，不是真 fd。
+
+保留理由：作为「如果有 DMA-BUF 会怎么设计」的推演材料，面试讲设计思路可以引用，
+但**绝不能说这是已落地的功能**。真实已实现清单见仓库根 README 的「明确未实现」表。
+
+原始设计意图（历史）：
 1. Rockchip MPP: Decodes H.264/H.265 directly into DMA-BUF contiguous memory.
 2. Rockchip RGA: Reads DMA-BUF fd, performs 2D color convert (NV12->RGB) & scale,
    writes to destination DMA-BUF fd.
