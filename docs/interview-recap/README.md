@@ -62,7 +62,8 @@
 | 数字 | 含义 | 出处 |
 |---|---|---|
 | **0.6087 → 0.6002** | **真 mAP@0.5（FP32→INT8，COCO128 / 929 GT / 71 类）**，−0.85 点 / −1.4% | `BENCHMARKS.md` 2.4 |
-| **12.2 MB → 4.34 MB（−64%）** | DFL-Free + 量化后的体积 | `BENCHMARKS.md` 2.3 |
+| **6.22 MB → 4.34 MB（−30.2%）** | **INT8 口径**：旧 84ch INT8 → DFL-Free INT8（图手术这一步的收益） | `BENCHMARKS.md` 2.3 |
+| **12.2 MB（FP32 ONNX）** | 原始 float32 模型体积，**不能和 4.34 MB 直接相减**（中间跨了量化 + 图手术两步） | `BENCHMARKS.md` 2.3 |
 | **1.22e-4 px / 0** | 图手术数值等价：box max\|Δ\| / cls max\|Δ\|（float32 极限） | `TROUBLESHOOTING.md` 第 2 条 |
 | ⚠️ **0.99651** | 余弦相似度——**别当精度证据用**，见下方反例 | `TROUBLESHOOTING.md` 第 3 条 |
 

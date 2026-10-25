@@ -28,8 +28,12 @@
   - `get_led_status` → `led_name / current_mode / brightness / description`
   - `control_led` → `success(bool) / current_mode / msg`; P0 修复后非法 mode 返回
     `error: "invalid_mode"`, 旧二进制会安全回退 heartbeat（测试两者都算通过）。
-  - `get_vision_telemetry` → `status("online"/"standby"/"no_data"/"error") / frame_id /
-    detected_count / detections[]`
+  - `get_vision_telemetry` → `status / frame_id / detected_count / detections[]`。
+    **status 真实枚举（以 `lab/rkllm_embodied_agent.cpp:497-510` 实现为准）**：
+    `online` / `offline` / `timeout` / `partial_frame` / `malformed_frame`。
+    ⚠️ 本文早期写的 `standby` / `no_data` 在实现中**并不存在**；T12 靠 `any_of` 的
+    `reply_mentions` 兜底分支通过（`lab/agent_regression_test.py:263-270`），四个
+    `obs_field` 候选里实际只有 `offline` 能命中。
 
 ---
 
@@ -49,9 +53,14 @@
 | T07_full_patrol | 「先检查硬件健康和温度, 再看看画面目标」 | `get_system_health` → `get_vision_telemetry` | tool_order 子序列断言 + 两者都调用 | 顺序正确、两工具齐 |
 | T08_conditional_decision | 「如果画面里有人就报警, 否则保持呼吸灯」 | `get_vision_telemetry` → `control_led`(视条件) | 必调视觉; 控灯则 mode∈{alarm,heartbeat}; 或合理口头汇报 | 至少完成感知, 决策合理 |
 | T09_repl_clear_then_query | REPL: 「把灯调成急闪报警」→ `/clear` → 「现在指示灯什么状态？」 | 轮1 `control_led(alarm)`; 轮2 `get_led_status` | /clear 后第二轮必须真查（tool_called get_led_status 且不 control_led） | 上下文清空后仍正确决策 |
-| T10_long_context_boundary | ~800 字重复长指令（逼近 max_context=2048） | 任意 | exit_clean（进程不崩、正常退出） | 超长输入不致崩溃 |
+| T10_long_context_boundary | ~860 字重复长指令（`"请检查开发板硬件健康状态并汇报当前温度、NPU负载与指示灯情况。"` × 27） | 任意 | exit_clean（进程不崩、正常退出） | 超长输入不致崩溃 |
+
+> ⚠️ **T10 口径已修正**：本文早期写「~800 字逼近 `max_context=2048`」，但代码里
+> `lab/rkllm_embodied_agent.cpp:864` 早已改成 `param.max_context_len = 8192`，
+> 而 860 字离 8192 还差一个数量级，且断言只有 `exit_clean`。
+> **不要在面试里把它当「长上下文压测通过」讲** —— 它验的只是「超长输入不崩」。
 | T11_repl_double_control | REPL: 「把灯调成常亮」→「把灯改成急闪报警」 | `control_led(on)` → `control_led(alarm)` | 两轮 tool_arg 分别=on / alarm | 连发指令参数不串扰 |
-| T12_vision_offline_fault | 【--with-faults】停 edgevision 后「现在画面里有什么？」 | `get_vision_telemetry` | obs status∈{standby,offline,no_data,error} 或 reply 说明离线/无法判断 | 优雅降级, 不捏造数据 |
+| T12_vision_offline_fault | 【--with-faults】停 edgevision 后「现在画面里有什么？」 | `get_vision_telemetry` | obs status∈{offline,timeout,partial_frame,malformed_frame} 或 reply 说明离线/无法判断 | 优雅降级, 不捏造数据 |
 
 补充约定:
 - 每条 CLI 用例独立起进程: `ssh <host> "cd /root/rkllm_deploy && timeout 180 ./<bin> '<query>'"`,

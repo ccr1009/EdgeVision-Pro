@@ -156,7 +156,8 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 ### ✅ 多步演示闭环(两幕) —— 交付并全部 PASS
 - `lab/agent_multistep_demo.py`(纯标准库):第一幕守护真实告警闪灯 + 第二幕 Agent 一条自然语言多步研判汇报
 - 第一幕 PASS:占空比 49.7% vs 20.0%,事件日志与 `llm_pending.jsonl` 均真实落盘
-- 第二幕 PASS:端到端 **106.5s**,工具链 4 个不同工具(`get_system_health → get_patrol_events → get_led_status → get_control_led`),Observation 20 条全合法 JSON,未触步数上限,输出 1335 字中文研判
+- 第二幕 PASS:端到端 **106.5s**(三次独立测量 106.5 / 112.2 / 123.9s,差异来自每轮生成 token 数不同),工具链 **4~5 个不同工具**(`get_system_health → get_patrol_events → get_led_status → control_led`,部分轮次还调了 `get_vision_telemetry`),Observation **20~29 条**全合法 JSON,未触步数上限,输出 **1315~1350 字**中文研判
+  - ⚠️ 口径说明:这里是三次演示的区间值,不是单次精确值;早期本行曾写死「4 个工具 / 20 条 / 1335 字」= 仅第一次演示那次的数据
 - **演示虽判 PASS,但翻 trace 发现两个真缺陷并已修复**(详见下方「演示暴露的缺陷」)
 - 文档:`docs/AGENT_MULTISTEP_DEMO.md`(含局限与面试讲法)
 
