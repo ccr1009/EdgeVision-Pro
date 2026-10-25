@@ -245,7 +245,10 @@ cd /root/rkllm_deploy
 
 ### 3. Agent 回归测试（PC 侧发起，SSH 驱动板上二进制）
 
+板子内网 IP 不入库，用环境变量或 `--host` 传（三个脚本都支持）：
+
 ```bash
+export EDGEVISION_BOARD_HOST=<board-ip>     # Windows: set EDGEVISION_BOARD_HOST=<board-ip>
 python lab/agent_regression_test.py --with-faults --timeout 240 --out-dir _test_results
 # 12 用例，含故障注入；--only T03 只跑指定用例；--list 列出全部用例
 ```

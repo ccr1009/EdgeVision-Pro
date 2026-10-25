@@ -216,6 +216,11 @@ def main():
                     help="CSV 输出路径, 默认 bench_contention_<时间戳>.csv")
     args = ap.parse_args()
 
+    if not args.host:
+        print("[FATAL] 没有目标板 IP。请用 --host <board-ip> 或设置环境变量 "
+              "EDGEVISION_BOARD_HOST=<board-ip>（板子内网 IP 不入库）")
+        return 2
+
     if args.interval < 0.2:
         print("[FATAL] interval 最小 0.2s (纯标准库 ssh 通道的现实下限)")
         return 2

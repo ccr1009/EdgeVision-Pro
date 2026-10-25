@@ -223,6 +223,12 @@ RK3588 的 SOC 正常工作区间是 30~65°C，49°C 完全正常；20°C 是�
 
 ## 5. 怎么跑
 
+先给脚本目标板 IP（板子内网 IP 不入库，用环境变量或 `--host` 传）：
+
+```bash
+export EDGEVISION_BOARD_HOST=<board-ip>    # Windows: set EDGEVISION_BOARD_HOST=<board-ip>
+```
+
 ```bash
 # 完整两幕（结束后自动停守护 + LED 回 heartbeat）
 python lab/agent_multistep_demo.py

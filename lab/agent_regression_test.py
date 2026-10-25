@@ -758,6 +758,11 @@ def main():
             print("%s [%s] %s" % (c["id"], c["mode"], c.get("desc", "")))
         return 0
 
+    if not args.host:
+        print("[FATAL] 没有目标板 IP。请用 --host <board-ip> 或设置环境变量 "
+              "EDGEVISION_BOARD_HOST=<board-ip>（板子内网 IP 不入库）")
+        return 2
+
     print("=" * 64)
     print("RK3588 Agent 回归测试  host=%s  bin=%s" % (args.host, args.bin))
     print("故障注入=%s  查询传输=%s" %
