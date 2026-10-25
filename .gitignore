@@ -12,3 +12,36 @@ build/
 deploy/cpp/build/
 *.whl
 .DS_Store
+
+# ---- 个人材料：不进公开仓库 ----
+# 简历源文件与归档版本（含手机号/邮箱/其他人的简历，别推到 GitHub）
+docs/*.docx
+docs/*.pdf
+docs/*.json
+docs/archive_resumes/
+docs/_build_resume*.py
+docs/RESUME_INTERN_2026.md
+docs/RESUME_校招_*.md
+# 编辑器/助手本地状态
+docs/.workbuddy/
+.vscode/
+.idea/
+
+# ---- 一次性调试产物：不进仓库 ----
+# MPP 硬编攻坚期的 11 轮探针（结论已固化进 bench/mpp_jpeg_encoder_evidence.md）
+deploy/cpp/bench/probe*_jpeg_enc.cpp
+deploy/cpp/bench/_run_probe*.sh
+deploy/cpp/bench/_final_check.sh
+deploy/cpp/bench/_verify_hard_jpeg.sh
+deploy/cpp/bench/_run_bench_jpeg_encoder.sh
+# 端侧 Agent P0 修复期的一次性脚本（结论已固化进 lab/p0_smoke_evidence.md）
+lab/_p0_*.sh
+lab/_p0_*.cpp
+lab/_p6_*.sh
+# 从板子回拉的临时副本
+*.from_board
+tmp/
+_test_results/
+# 回归测试的输出目录（保留占位 README，结果不入库）
+lab/agent_test_results/*
+!lab/agent_test_results/README.txt

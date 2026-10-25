@@ -1,5 +1,11 @@
 # EdgeVision-RK3588: 端侧多路智能视频分析盒子
 
+> ⚠️ **本文档是项目早期（2026 年 8 月，板子到货前）的 x86 仿真阶段设计稿**，其中
+> 「真机到货无缝切换」「跑满 6 TOPS 峰值」等表述属于当时的目标设定，**不是实测结论**。
+> 板端真实实测数据请看 [`BENCHMARKS.md`](BENCHMARKS.md)，当前能力快照看 [`CURRENT_STATUS.md`](CURRENT_STATUS.md)，
+> 项目总览看仓库根目录 [`README.md`](../README.md)（含「明确未实现」清单）。
+> 本文只作为架构演进的历史记录保留。
+
 [![Platform](https://img.shields.io/badge/Platform-RK3588%20%7C%20WSL2%20x86-blue.svg)](#)
 [![NPU](https://img.shields.io/badge/NPU-6%20TOPS%20(3--Core)-orange.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.10-green.svg)](#)
@@ -87,7 +93,9 @@ edgevision-rk3588/
 │   └── run_all_tests.sh        # 一键运行全系统自测套件
 └── docs/                       # 项目文档体系
     ├── README.md               # 项目架构与快速上手指南
-    ├── BENCHMARKS.md           # 性能与延迟基准数据表
+    ├── CURRENT_STATUS.md       # 现在能干什么 + 下一步(接手先看这份)
+    ├── BENCHMARKS.md           # 性能与延迟基准数据表(含测量口径与局限)
+    ├── TROUBLESHOOTING.md      # 踩过的坑:现象 → 排查 → 根因 → 解法
     ├── STUDY_GUIDE.md          # 概念映射到代码位置的学习手册
     └── HANDOVER.md             # RK3588 板子到货后的保姆级交接清单
 ```

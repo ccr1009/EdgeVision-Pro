@@ -15,9 +15,9 @@
 |---|---|
 | 开发板 | EVM3588-B(英码 EMA),SOM3588-B,8GB + 64GB eMMC |
 | 系统 | **Debian 11**,kernel **5.10.110** |
-| NPU | **驱动 v0.9.2 / 运行时 API 1.5.2**,3 核,主频 1.0 GHz |
-| 网络 | 有线,板子 `<board-ip>`;WiFi 已关(掉线) |
-| SSH | `ssh root@<board-ip>`(**已配免密**,别名 `ssh rk3588`) |
+| NPU | **驱动 v0.9.2 / 运行时 API 2.3.0**,3 核,主频 1.0 GHz |
+| 网络 | 有线,板子 IP 见本地私密记录(校园内网);WiFi 已关(掉线) |
+| SSH | `ssh <user>@<board-ip>`(**已配免密**,别名 `ssh rk3588`) |
 | 已知正常 | 内存 7.5Gi、eMMC 57.6G、RGA/MPP 正常、librknnrt.so 已装 |
 
 ### 关键坑
@@ -39,7 +39,7 @@
 ## 3. 构建 / 运行
 ```bash
 # 项目主程序(板端,先编译)
-ssh root@<board-ip>
+ssh root@<board-ip>          # 板子 IP 见本地私密记录(校园内网)
 cd /root/edgevision/deploy/cpp && mkdir -p build_native && cd build_native
 cmake .. -DCROSS_COMPILE_RK3588=ON && make
 cd /root/edgevision && ./deploy/cpp/build_native/edgevision_pro_rknn

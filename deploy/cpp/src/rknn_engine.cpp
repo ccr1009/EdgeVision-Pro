@@ -103,12 +103,10 @@ bool RKNNEngine::run_inference(const unsigned char* rgb_data, int width, int hei
     rknn_outputs_release(pImpl->ctx, 1, outputs);
     return true;
 #else
-    // x86 Stub: Simulate 2 detections (person, car) with realistic confidence
-    Detection d1 = {150.0f, 100.0f, 200.0f, 220.0f, 0.88f, 0}; // person
-    Detection d2 = {30.0f, 480.0f, 150.0f, 540.0f, 0.92f, 2};  // car
-    detections.push_back(d1);
-    detections.push_back(d2);
-    return true;
+    // x86 Stub: 无 NPU。按 AGENTS.md 约定 3, 不再返回伪造检测框 ——
+    // 返回 false 让调用方明确知道本平台无真实推理能力。
+    (void)rgb_data; (void)width; (void)height;
+    return false;
 #endif
 }
 

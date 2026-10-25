@@ -1,78 +1,17 @@
+// ============================================================================
+//  ⚠️ 本文件已废弃 (2026-10-24) —— 请勿使用 / DO NOT USE
+//
+//  原因: 这曾是纯仿真桩。DMABufDescriptor.fd 是硬编码的 1000+i / 2000+i,
+//  没有任何真实 MPP/RGA/DMA-BUF 内核交互; rga_hardware_transform() 只是
+//  改了个 bool 标志位就宣称完成"硬件变换"; 主程序据此打印的
+//  "Memory Bandwidth Saved" 全是编造数字, 违反 AGENTS.md 工作约定 3
+//  (不许用假数据冒充结果)。
+//
+//  真实替代品:
+//    - MPP 硬解:   include/mpp_jpeg_decoder.h  (edgevision::MppJpegDecoder,
+//                  实测 1280x720 MJPEG->NV12 p50 1.03ms, 9/9 PSNR 验证)
+//    - 真实主程序: src/edgevision_pro_main.cpp (MPP 硬解 -> RKNN -> BEV)
+//
+//  本文件保留空壳仅作历史标记, 内容已清空, 编译不依赖它。
+// ============================================================================
 #pragma once
-
-#include <cstdint>
-#include <cstddef>
-#include <vector>
-#include <string>
-#include <iostream>
-
-namespace edgevision {
-
-enum RKNNCoreMaskCpp {
-    RKNN_CORE_AUTO = 0,
-    RKNN_CORE_0    = 1,
-    RKNN_CORE_1    = 2,
-    RKNN_CORE_2    = 4,
-    RKNN_CORE_ALL  = 7
-};
-
-struct DMABufDescriptor {
-    int fd;
-    size_t size_bytes;
-    int width;
-    int height;
-    std::string format;
-    bool is_busy;
-};
-
-class ZeroCopyPipelineEngine {
-public:
-    ZeroCopyPipelineEngine(int pool_size = 6) : pool_size_(pool_size) {
-        // Pre-allocate buffer pool
-        for (int i = 0; i < pool_size_; ++i) {
-            mpp_pool_.push_back({1000 + i, 1920 * 1080 * 3 / 2, 1920, 1080, "NV12", false});
-            rga_pool_.push_back({2000 + i, 640 * 640 * 3, 640, 640, "RGB888", false});
-        }
-    }
-
-    DMABufDescriptor* acquire_mpp_buffer() {
-        for (auto& buf : mpp_pool_) {
-            if (!buf.is_busy) {
-                buf.is_busy = true;
-                return &buf;
-            }
-        }
-        return nullptr;
-    }
-
-    DMABufDescriptor* rga_hardware_transform(DMABufDescriptor* src_buf) {
-        if (!src_buf) return nullptr;
-        for (auto& dst_buf : rga_pool_) {
-            if (!dst_buf.is_busy) {
-                dst_buf.is_busy = true;
-                // Recycle source MPP buffer back to pool
-                src_buf->is_busy = false;
-                bytes_saved_total_ += (src_buf->size_bytes + dst_buf.size_bytes);
-                zero_copy_count_++;
-                return &dst_buf;
-            }
-        }
-        return nullptr;
-    }
-
-    void release_rga_buffer(DMABufDescriptor* buf) {
-        if (buf) buf->is_busy = false;
-    }
-
-    size_t get_bytes_saved() const { return bytes_saved_total_; }
-    int get_zero_copy_count() const { return zero_copy_count_; }
-
-private:
-    int pool_size_;
-    std::vector<DMABufDescriptor> mpp_pool_;
-    std::vector<DMABufDescriptor> rga_pool_;
-    size_t bytes_saved_total_ = 0;
-    int zero_copy_count_ = 0;
-};
-
-} // namespace edgevision
