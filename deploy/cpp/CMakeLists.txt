@@ -138,6 +138,24 @@ if(CROSS_COMPILE_RK3588)
         target_link_libraries(edgevision_pro_rknn rknnrt pthread ${MPP_LIBS}
                               ${OpenCV_LIBS})
         target_include_directories(edgevision_pro_rknn PRIVATE ${OpenCV_INCLUDE_DIRS})
+
+        # -------------------------------------------------------------------
+        #  edgevision_dashboard (task-9, 2026-10-26)
+        #  连续视频流 + 3D 线框 + BEV 雷达 + MJPEG/HTTP 看板, 端口默认 8090。
+        #  与 edgevision_pro 共用 bev_render.hpp / BEVProjector / RKNNEngineDflFree。
+        #  需要 OpenCV videoio (读 mp4), 而 edgevision_pro 只要 core/imgproc/imgcodecs
+        #  —— 所以这里单独再 find 一次 videoio, 找不到就不生成该 target。
+        # -------------------------------------------------------------------
+        find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs videoio)
+        if(OpenCV_FOUND)
+            add_executable(edgevision_dashboard src/edgevision_dashboard_main.cpp ${COMMON_SOURCES})
+            target_link_libraries(edgevision_dashboard rknnrt pthread ${MPP_LIBS}
+                                  ${OpenCV_LIBS})
+            target_include_directories(edgevision_dashboard PRIVATE ${OpenCV_INCLUDE_DIRS})
+            message(STATUS "edgevision_dashboard enabled (HTTP 看板, 默认端口 8090)")
+        else()
+            message(WARNING "edgevision_dashboard skipped (OpenCV 缺 videoio 组件)")
+        endif()
     else()
         message(WARNING "edgevision_pro_rknn skipped (needs OpenCV)")
     endif()
@@ -149,6 +167,11 @@ if(CROSS_COMPILE_RK3588)
                        BUILD_RPATH "${MPP_ROOT}/lib")
         if(TARGET edgevision_pro_rknn)
             set_target_properties(edgevision_pro_rknn
+                PROPERTIES INSTALL_RPATH "${MPP_ROOT}/lib"
+                           BUILD_RPATH "${MPP_ROOT}/lib")
+        endif()
+        if(TARGET edgevision_dashboard)
+            set_target_properties(edgevision_dashboard
                 PROPERTIES INSTALL_RPATH "${MPP_ROOT}/lib"
                            BUILD_RPATH "${MPP_ROOT}/lib")
         endif()

@@ -26,7 +26,13 @@
 这张图来自**板端 C++ 链路**（MPP 硬解 → NPU → 后处理 → BEV 投影），不是仿真渲染。*
 
 > **实时演示链路**：
-> - **板端实时 Web 流媒体**：板端运行 `lab/w4_edgevision_preview_real`，浏览器访问 `http://<板子IP>:8080` 实时查看 DFL-Free INT8 真实检测画面与遥测 HUD。
+> - **车载道路实景 3D 看板（2026-10-26，推荐演示）**：板端运行 `./deploy/cpp/build_release/edgevision_dashboard --port 8090`，
+>   浏览器访问 `http://<板子IP>:8090` —— 板子**循环读 `data/videos/highway_traffic.mp4`**（267 帧/圈），
+>   每帧画 **4~11 个真实车辆的彩色 3D 立方体线框**（贴地锚定）+ **右上角自车 BEV 雷达小地图**（同心环/FOV 锥/目标方块带测距）
+>   + 顶部遥测 HUD，实测 **24~27 fps @ 1280×720 MJPEG**。端点 `/` `/api/stats` `/snapshot` `/stream`，
+>   验收脚本 [`scripts/verify_bev_dashboard.py`](scripts/verify_bev_dashboard.py) 6 项全绿（含 271 帧 271 个不同 crc32）。
+>   *不抢摄像头，可与 8080 / 9000 同时跑。证据图 `docs/images/bev_dashboard_live_720p.jpg`。*
+> - **板端实时 Web 流媒体（摄像头）**：板端运行 `lab/w4_edgevision_preview_real`，浏览器访问 `http://<板子IP>:8080` 实时查看 DFL-Free INT8 真实检测画面与遥测 HUD。
 > - **TCP 9000 边缘推流网关**：板端守护进程直推 248 字节结构体，PC 运行 [`lab/pc_client_viewer.py`](lab/pc_client_viewer.py) 实时跨机解析呈现（实测连续 800+ 帧稳态 19.2 FPS）。
 > - *注：[`demo/`](demo/) 为早期免硬件环境的 PC 离线看板素材；开发板全链路实测性能以本文「板端实测基准」一节为准。*
 
@@ -195,6 +201,8 @@
 
 | 指标 | 数值 | 口径 / 局限 |
 |---|---|---|
+| **车载实景看板（mp4 循环）** | **24~27 fps**（p50 25.71），单帧全链路 p50 **38.90 ms**，1280×720 MJPEG 144 KB/帧 | 200 样本直采 `/api/stats`；**带背景负载测的**（9000+8080 常驻），输入是视频文件不是摄像头 |
+| 看板分段耗时 | `capture 5.42 + prep 7.84 + npu 16.39（含 DFL 0.69）+ draw 1.58 + encode 7.55 = 38.90 ms` | 同上看板；**瓶颈在 CPU 侧（prep+encode 40%）不在 NPU（42%）** |
 | MPP 硬解 MJPG | **p50 1.03 ms** vs 软解 7.76 ms（7.6×） | 200/200 有效帧，9 图 PSNR 49.9~77.2 dB |
 | INT8 量化掉点 | **mAP@0.5 0.6087 → 0.6002（−0.85 点 / −1.4%）** | COCO128 是训练子集，绝对 mAP 偏乐观，相对掉点成立 |
 | 模型体积 | INT8 **6.22 MB → 4.34 MB（−30.2%）**；FP32 ONNX 12.2 MB → INT8 6.22 MB（−49.2%） | 两步分开算，别合成 12.2→4.34 |
@@ -209,7 +217,9 @@
 | RGA 硬件 CSC / 缩放 | **未实现**，当前是 CPU 定点实现 |
 | DMA-BUF / 全链路零拷贝 | **未实现**，`rknn_inputs_set` 走普通内存拷贝 |
 | RTSP / WebRTC 推流 | **未实现**，实际是 TCP 9000 自定义 248 B 定长帧协议 |
-| H.264 / H.265 硬解 | **未实现**，MPP 只做了 MJPEG |
+| H.264 / H.265 硬解 | **未实现**，MPP 只做了 MJPEG；车载看板的 mp4 输入是 **libavcodec 软解**（capture 5.42 ms） |
+| 看板跑满 30 fps | **未实现**，实测 **24~27 fps**（源视频 30 fps 的 82~90%）；原因见基准表「看板分段耗时」 |
+| 目标跟踪（跨帧 ID 稳定） | **未实现**，看板每帧独立检测，`#idx` 跨帧**不连续**，BEV 方块靠位置连续性肉眼跟随 |
 | ByteTrack 进 C++ 网关 | **未实现**，`track/` 下只有 Python 仿真 |
 | 整机功耗 | **未测**，无功率计 |
 | MPP 硬编 JPEG | **已实现但已否掉**，实测比软编慢（见关键技术点 5） |
@@ -237,6 +247,25 @@ make -j4
 ```bash
 ./edgevision_pro /root/edgevision/data/calib_v2/real_000.jpg
 ```
+
+### 1.5 车载道路实景 3D 看板（8090 端口，2026-10-26）
+
+```bash
+cd /root/edgevision/deploy/cpp
+cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Release -DCROSS_COMPILE_RK3588=ON
+cmake --build build_release --target edgevision_dashboard -j4
+
+cd /root/edgevision
+./deploy/cpp/build_release/edgevision_dashboard --port 8090 \
+    --video data/videos/highway_traffic.mp4 --width 1280 --height 720 --quality 80
+# 浏览器开 http://<板子IP>:8090
+```
+
+> 视频循环读（读到末尾自动 `POS_FRAMES=0` 重头，日志里 `loop_index` 递增）。
+> **不占用摄像头**，可与 8080 预览、9000 网关同时跑。
+> 端到端验收（PC 侧，纯标准库 6 项检查）：
+> `python scripts/verify_bev_dashboard.py --host <板子IP> --port 8090 --seconds 10`
+> 网页是**运行时从 `deploy/cpp/web/dashboard.html` 读文件**，改完 HTML 只需 scp，不用重新编译。
 
 ### 2. 端侧 Agent（纯单板离线）
 

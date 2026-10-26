@@ -1023,3 +1023,145 @@ cat /proc/interrupts | grep jpege
 
 **代码位置**：`deploy/cpp/{include/mpp_jpeg_encoder.h, src/mpp_jpeg_encoder.cpp, bench/bench_jpeg_encoder.cpp}`，
 完整证据 `deploy/cpp/bench/mpp_jpeg_encoder_evidence.md`。
+
+---
+
+### 2.10 车载道路实景实时看板（mp4 循环 → 3D 线框 + BEV 雷达 → MJPEG over HTTP，2026-10-26）
+
+> **口径先讲清**：
+> 1. 这节测的是**整机实时看板**（`edgevision_dashboard`），输入是**视频文件循环**（`data/videos/highway_traffic.mp4`），
+>    **不是**摄像头；所以「capture」段只是 `cv::VideoCapture` 从 mp4 解一帧 H.264，没有 V4L2 采集与 UVC 曝光延迟。
+> 2. 全部为 `build_release`（`-O3 -DNDEBUG -mcpu=cortex-a76.cortex-a55`）产物，**未绑核**（看板要喂 4 个线程：
+>    主循环 + HTTP accept + 每连接一线程，绑核反而失真）。这与 2.8 节 `taskset -c 6` 的口径**不同，不可混用**。
+> 3. 测量期间板上 `edgevision.service`（9000 网关，占 `/dev/video81`，CPU ~55%）与
+>    `w4_edgevision_preview_real`（8080）**仍在运行**，即这是一个**带背景负载**的数字，空载只会更好。
+> 4. 单帧各段来自 `steady_clock` 打点，与 `/api/stats` 返回的字段**同一份数据**（不是另算一遍）。
+
+#### 2.10.1 结论先行
+
+| 指标 | 实测 | 说明 |
+|---|---|---|
+| 输出分辨率 / 编码 | **1280×720 / MJPEG(JPEG q80)** | 1080p@30 需 6.5 MB/s，浏览器与校园网扛不住 |
+| 端到端帧率 | **24~27 fps**（200 样本 p50 = 25.71 fps；10s 验收窗口 271 帧 = 27.08 fps） | 差源视频 30 fps 约 12~20% |
+| 单帧全链路 | **p50 38.90 ms / p95 42.03 ms / p99≈45 ms** | `total_ms`，不含 loop 节流 |
+| 每帧真实 3D 目标 | **4~11 个，p50 8 个** | 正好落在用户期望的「7~8 辆车」 |
+| JPEG 帧大小 | **p50 144 KB / p95 150 KB** | 换算带宽 ≈ **3.7 MB/s**@25.7fps |
+| 视频循环 | 267 帧/圈 ≈ 8.9 s，**实测已连续跑过 100+ 圈**（`loop_index` 122→123） | 真循环，不是拼帧 |
+
+**关键判断：瓶颈在 CPU 侧的「预处理 + JPEG 编码」而不是 NPU。**
+NPU 16.39 ms 只占 42%，而 `prep 7.84 + encode 7.55 = 15.39 ms` 占了 40%，
+两者相加已经把 33.3 ms 的源帧周期吃满 → **这就是达不到 30 fps 的直接原因**。
+
+#### 2.10.2 分段延迟（200 样本，`/api/stats` 直采）
+
+| 阶段 | min | p50 | p95 | max | 占 p50 全链 |
+|---|---:|---:|---:|---:|---:|
+| capture（mp4 解一帧 H.264，1080p） | 5.23 | **5.42** | 5.55 | 5.70 | 13.9% |
+| prep（resize 720p + letterbox 640 + BGR→RGB + 跨类别去重 + BEV 投影） | 5.00 | **7.84** | 10.78 | 15.05 | 20.2% |
+| npu（`rknn_run` + DFL 解码 + NMS） | 16.11 | **16.39** | 16.79 | 19.28 | 42.1% |
+| └ decode（DFL 解码 + NMS，含在 npu 内，单列） | 0.66 | **0.69** | 0.71 | 0.74 | 1.8% |
+| draw（3D 框 + BEV 雷达 + HUD，720p） | 1.26 | **1.58** | 1.78 | 1.89 | 4.1% |
+| encode（`cv::imencode` JPEG q80，720p） | 7.45 | **7.55** | 7.63 | 7.74 | 19.4% |
+| **total** | 35.81 | **38.90** | 42.03 | 46.20 | 100% |
+
+> ⚠️ `prep_ms` 的取值范围很宽（5.00~15.05）而 p95=10.78 —— 因为这段是**纯 CPU**且没有绑核，
+> 会被 `edgevision.service`（3 核 NPU 网关）抢 CPU。这与 2.8.6 的教训同源：**CPU 段不绑核，长尾会污染均值**。
+> NPU 段反而最稳（16.11~19.28），因为它不在 CPU 上跑。
+
+#### 2.10.3 与「单张图」链路的对照（同一个模型、同一份视频）
+
+| 项目 | 单张 jpg 版（`edgevision_pro_rknn`） | 实时看板（`edgevision_dashboard`） |
+|---|---|---|
+| 输入 | 单张 1080p jpg，**MPP 硬解** | mp4 循环，**OpenCV 软解 H.264** |
+| 解码耗时 | 1.25~1.32 ms（MPP） | **5.42 ms**（libavcodec） |
+| CSC | 33.58 ms（1080p 全分辨率 CPU CSC） | **不需要**（先 `cv::resize` 到 720p 再在 640 上 `cvtColor`） |
+| 输出 | `imwrite` png（不计时） | `imencode` jpg 720p **7.55 ms** |
+| 全链路 | 55.84 ms / 17.9 FPS（`taskset` 绑核） | **38.90 ms / 25.7 FPS**（不绑核） |
+
+**这张表解释了一件事：看板比单张版快，不是因为它更优化，而是因为它「少干了一件事」——**
+单张版在 1080p 全分辨率上做 CSC（33.58 ms），看板先把图缩到 720p 再算，等于把这块成本整个砍掉。
+**这是分辨率选择带来的收益，不能算成算法优化。**
+
+#### 2.10.4 为什么输出降到 720p
+
+| 输出分辨率 | `imencode` q80 | 单帧字节 | 25 fps 所需带宽 |
+|---|---:|---:|---:|
+| 1920×1080 | 18.90 ms | 218 KB | **5.5 MB/s** |
+| **1280×720** | **7.51~7.55 ms** | **144 KB** | **3.7 MB/s** |
+
+1080p 输出的话，光编码就 18.90 ms，加上 NPU 16.39 + capture 5.42 = 40.7 ms，**必然掉到 20 fps 以下**，
+且 MJPEG 不吃帧间压缩，带宽随分辨率线性涨。720p 是「画质够看清 3D 框贴不贴车身」与「帧率 + 带宽」的折中点。
+
+#### 2.10.5 端到端验收（`scripts/verify_bev_dashboard.py`，PC 侧对板端跑）
+
+```
+[PASS] 1. 页面外壳 GET /          HTTP 200, text/html, 39481 字节, 含 /api/stats
+[PASS] 2. 指标接口 GET /api/stats  frame_id 1304 -> 1330 (Δ+26), pipeline_fps 26.20,
+                                  npu_ms 16.42, total_ms 38.17, objects_3d/total 8/8
+[PASS] 3. 单帧快照 GET /snapshot   144152 字节, SOI/EOI 齐, 与 stats.jpeg_bytes 比 1.00
+[PASS] 4. 实时流 GET /stream      271 帧 / 10.01 s = 27.08 fps,
+                                  缺 Content-Length 0 个 / CL 不符 0 个 / 非法 JPEG 0 个
+[PASS] 5. 并发可用性              拉流中并发 /api/stats 33.7 ms
+[PASS] 6. 帧内容变化性            271 帧 → 271 个不同 crc32（0 个重复）
+```
+
+**第 6 项是这套验收的核心**：只看「收到 271 帧」不能证明它不是把同一张图重发 271 次，
+必须比对**内容哈希**。271/271 全不同 + 长度区间 [137986, 150788] 有波动 → 是真流。
+
+#### 2.10.6 跨类别去重：class-aware NMS 的副作用（实测数据）
+
+DFL-Free 的 NMS 是 **class-aware**（不同类别互不抑制，见 `postprocess_dfl_free.cpp`），
+于是一辆被模型同时判成 car / truck / bus 的车会输出**三个几乎重合的框**，画出来就是「一辆车套三种颜色的 3D 框」。
+
+真实样本（`hf_240` 帧）：
+```
+truck 0.348  bbox=(977,603,1066,694)
+bus   0.287  bbox=(975,601,1064,693)   ← IoU ≈ 0.96
+car   0.266  bbox=(980,604,1066,693)
+```
+看板在投影前加了**跨类别 IoU 去重**（阈值 0.65，保留分数最高的类别），
+实测丢弃率 **≈ 0.18 个框/帧**（200 样本累计 539 个 / 3019 帧；长跑样本 6047 个 / 33080 帧，比例一致）。
+
+> 为什么不在 `postprocess_dfl_free.cpp` 里直接改 NMS？因为那是**精度评估在用的公共组件**，
+> COCO mAP 的口径（0.6087 / 0.6002，见 2.4 节）就是按 class-aware NMS 算的。改它会**让已有指标全部失效**。
+> 所以去重放在看板自己的业务层，不动评估链路 —— **口径隔离优先于代码复用**。
+
+#### 2.10.7 局限（引用时一起说）
+
+1. **达不到源视频 30 fps**：实测 24~27 fps，播放速度约为原速的 82~90%。要说「准实时」而不是「30fps 实时」。
+2. **输入是视频文件不是摄像头**：capture 5.42 ms 是 libavcodec 解 H.264，换成 UVC 摄像头后这一段会变成 V4L2 采集（历史实测 33.33 ms/帧 = 30fps 上限），整条链路需要重测。
+3. **H.264 是软解**：没有走 MPP 硬解（MPP 的 AVC 路径没实现，现有 `mpp_jpeg_decoder.cpp` 只有 MJPEG）。所以 5.42 ms 是 CPU 成本。
+4. **24~27 fps 是在带背景负载下测的**（9000 网关 + 8080 预览常驻），空载会更高，但**没有单独测空载**，不要报一个没测过的数。
+5. **3D 框依赖单目尺寸先验**（车 L4.5/W1.8/H1.5 m）+ 假设路面水平、相机俯仰 3.5°、安装高 1.50 m。这些是**估的参数不是标定值**，距离误差没有真值对照，绝对精度不可信（相对变化趋势可信）。
+6. **没有目标跟踪**：每帧独立检测，所以「同一辆车」在不同帧的 `#idx` 编号不连续，BEV 雷达上的方块靠位置连续性肉眼跟随，不是 ID 跟踪。
+
+#### 2.10.8 复现命令
+
+```bash
+# 板上编译（Release）
+cd /root/edgevision/deploy/cpp
+cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Release -DCROSS_COMPILE_RK3588=ON
+cmake --build build_release --target edgevision_dashboard -j4
+
+# 板上运行（默认 8090，读 data/videos/highway_traffic.mp4 循环）
+cd /root/edgevision
+./deploy/cpp/build_release/edgevision_dashboard --port 8090 \
+    --video data/videos/highway_traffic.mp4 \
+    --width 1280 --height 720 --quality 80
+
+# PC 侧浏览器
+#   http://<board-ip>:8090
+
+# PC 侧端到端验收（纯标准库，6 项检查）
+EDGEVISION_BOARD_HOST=<board-ip> python scripts/verify_bev_dashboard.py \
+    --host <board-ip> --port 8090 --seconds 10 --min-fps 8
+
+# 采 200 个 /api/stats 样本算 p50/p95（本文件 2.10.2 的数据来源）
+#   见 docs 内联脚本逻辑：每 50ms 拉一次 /api/stats，取 total_ms 等字段排序
+```
+
+**代码位置**：
+`deploy/cpp/src/edgevision_dashboard_main.cpp`（主程序，783 行）、
+`deploy/cpp/include/bev_render.hpp`（共享渲染层，header-only）、
+`deploy/cpp/web/dashboard.html`（前端，1270 行，零外链）、
+`scripts/verify_bev_dashboard.py`（验收脚本，969 行，纯标准库）。

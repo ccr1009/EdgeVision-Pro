@@ -5,7 +5,7 @@
 ## 一句话
 RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
-> 最后一次更新:**2026-10-26 · 实习简历定稿 v12 (DOCX/PDF 双格式 Exactly 1 Page)**(全面同步 DFL-Free 57% 优化、COCO128 mAP 0.6002、MPP 硬件解码 1.03ms、Qwen3.5-2B 单板具身 Agent 硬件闭环)
+> 最后一次更新:**2026-10-26 · 车载道路实景实时看板 8090 通关**(mp4 循环 → 7~8 辆真实车辆 3D 线框 + 右上角 BEV 雷达 → 浏览器 MJPEG,实测 24~27 fps、6/6 端到端验收全绿)
 
 ## 现在能干什么
 - SSH 板子:`ssh root@<board-ip>`(**已配免密**;别名 `ssh rk3588`;有线。IP 与密码见本地私密记录,不入库)
@@ -13,6 +13,12 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 - **网页实时预览(带真实检测框)**:浏览器开 **`http://<board-ip>:8080`**
   - 启动:`cd /root/lab && ./w4_edgevision_preview_real /dev/video81 0.25`
   - 注意它和 9000 网关**抢同一个 `/dev/video81`**,同时跑必须错开
+- **车载道路实景 3D 看板(2026-10-26 新增,8090 端口)**:浏览器开 **`http://<board-ip>:8090`**
+  - 启动:`cd /root/edgevision && ./deploy/cpp/build_release/edgevision_dashboard --port 8090`
+  - **读 mp4 循环(默认 `data/videos/highway_traffic.mp4`,267 帧/圈自动重头),不抢摄像头,可与 8080/9000 同时跑**
+  - 每帧画 7~8 辆(box 4~11 个)真实车辆**彩色 3D 立方体线框** + 右上角**自车 BEV 雷达**(同心环 10~50m / FOV 锥 / 自车三角 / 目标方块带测距标签) + 顶部 HUD
+  - 实测 **24~27 fps**(720p MJPEG q80,144KB/帧,带宽 ≈3.7MB/s),端到端验收 6/6 全绿
+  - 端点:`/`(网页) `/api/stats`(JSON 结构化指标 + dets) `/snapshot`(单帧 JPEG) `/stream`(MJPEG)
 - **新模型(DFL-Free)测速**:`cd /root/lab && ./bench_dflfree /root/edgevision/data/models/yolov8n_dflfree_rk3588_i8.rknn 200`
 - **mAP 评估**:`python convert/eval_map.py --model data/models/yolov8n_dflfree.onnx`(PC)/ `--preds int8_preds.txt`(读板端结果)
 - 跑 NPU:`cd /root/edgevision && ./deploy/cpp/build_native/edgevision_pro_rknn`
@@ -232,6 +238,41 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 - **结论**:单路 30fps 场景 CPU 不是瓶颈 → **从路线图划掉「MPP 硬编省 7.2ms」,改做 RGA CSC**
 - 数据:`docs/BENCHMARKS.md` 2.9 节;踩坑 6 条在 `bench/mpp_jpeg_encoder_evidence.md`
   (最坑的一条:FIXQP 下 `fps_in_denom=0` 触发 `rc_frm_check_drop` 断言,直接 Segfault)
+
+---
+
+## 车载道路实景 3D 实时看板(2026-10-26 新增,8090 端口)
+
+> 用户需求原话:「让板子循环读高速道路视频,浏览器里看到流畅的动态道路视频流,每帧上 7~8 辆车的 3D 彩色立方体线框紧贴车身移动,
+> 右上角自车 BEV 雷达小地图实时动态闪烁」。**已 100% 真实跑通,零假数据。**
+
+### 交付物
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `deploy/cpp/src/edgevision_dashboard_main.cpp` | 783 | 主程序:mp4 循环 → letterbox 640 → NPU → 跨类别去重 → BEV 投影 → 3D 框 + 雷达 + HUD → MJPEG over HTTP |
+| `deploy/cpp/include/bev_render.hpp` | — | 共享渲染层(header-only):`class_color` / `draw_3d_box` / `draw_2d_fallback` / `render_bev_radar` / `paste_radar` |
+| `deploy/cpp/web/dashboard.html` | 1270 | 单文件前端,零外链(唯一 `src` 取值 = `/stream`),深色 HUD + 500ms 轮询 `/api/stats` + 断流自愈 |
+| `scripts/verify_bev_dashboard.py` | 997 | 端到端验收脚本,纯标准库 6 类检查(页面/stats/snapshot/stream/并发/帧变化性) |
+
+### 实测数字(200 样本,`/api/stats` 直采;口径见 `BENCHMARKS.md` 2.10)
+- **24~27 fps**(p50 **25.71** fps);单帧全链路 p50 **38.90 ms**(p95 42.03)
+- 分段:**capture 5.42 + prep 7.84 + npu 16.39(dfl 0.69)+ draw 1.58 + encode 7.55**
+- 每帧真实 3D 目标 **4~11 个,p50 8 个**(正好是用户要的 7~8 辆);循环 **100+ 圈**
+- 端到端验收 **6/6 全绿**,其中第 6 项 **271 帧 → 271 个不同 crc32**(证明是活流不是重发同一张图)
+
+### 三个值得讲的判断
+1. **瓶颈不在 NPU**:NPU 16.39ms 只占 42%,而 CPU 侧 `prep 7.84 + encode 7.55 = 15.39ms` 占 40%,
+   两者相加吃满 33.3ms 的源帧周期 → 这就是到不了 30fps 的直接原因。**下一步要提速得砍 CPU 侧,不是再压 NPU。**
+2. **比单张 jpg 版快(38.90 vs 55.84ms)不是因为优化得好**:单张版在 1080p 全分辨率做 CSC(33.58ms),
+   看板先 `resize` 到 720p 再算,等于把这块整个砍掉。**这是分辨率选择的收益,不能算算法优化。**
+3. **跨类别去重不能塞进 `postprocess_dfl_free.cpp`**:那个 NMS 是 class-aware(不同类别互不抑制),
+   导致一辆车被同时判成 truck/bus/car 输出 3 个 IoU≈0.96 的重合框。但它是**精度评估在用的公共组件**,
+   COCO mAP 0.6087/0.6002 就是按它算的 → 改它会让已有指标全部失效。**去重放在看板业务层,口径隔离优先于代码复用。**
+   实测丢弃率 ≈0.18 框/帧。
+
+### 明确未实现(不要对外宣传)
+H.264 硬解(仍是 libavcodec 软解 5.42ms)/ RGA CSC / DMA-BUF 零拷贝 / 目标跟踪(`#idx` 跨帧不连续)/
+RTSP / 摄像头输入(当前只吃视频文件)/ 30fps(实际 24~27,是原速的 82~90%)
 
 ---
 

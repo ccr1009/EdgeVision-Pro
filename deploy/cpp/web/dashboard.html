@@ -1,0 +1,1279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>EdgeVision RK3588 · 车载道路实时 3D 感知看板</title>
+<style>
+  /* ===================== 设计变量 ===================== */
+  :root {
+    --bg: #0b1120;
+    --bg-deep: #05090f;
+    --panel-top: rgba(20, 32, 54, .90);
+    --panel-bot: rgba(11, 19, 33, .94);
+    --line: rgba(148, 163, 184, .13);
+    --line-strong: rgba(45, 212, 191, .22);
+    --txt: #e7eef8;
+    --txt-dim: #93a7c0;
+    --txt-faint: #5f748f;
+    --teal: #2dd4bf;
+    --teal-bright: #38f0d0;
+    --green: #34d399;
+    --amber: #f59e0b;
+    --danger: #f87171;
+    --radius-lg: 16px;
+    --radius-md: 12px;
+    --mono: "Cascadia Mono", "JetBrains Mono", "Consolas", "SF Mono", ui-monospace, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html { background: var(--bg); }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--txt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+                 "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    background:
+      radial-gradient(1100px 560px at 10% -12%, rgba(45, 212, 191, .11), transparent 62%),
+      radial-gradient(900px 520px at 100% 0%, rgba(56, 189, 248, .09), transparent 58%),
+      radial-gradient(700px 500px at 50% 120%, rgba(245, 158, 11, .05), transparent 60%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* HUD 扫描线：纯装饰，不承载任何信息 */
+  .scanlines {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    pointer-events: none;
+    opacity: .5;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, .028) 0px,
+      rgba(255, 255, 255, .028) 1px,
+      rgba(0, 0, 0, 0) 1px,
+      rgba(0, 0, 0, 0) 3px
+    );
+  }
+
+  /* ===================== 顶部条 ===================== */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    padding: 12px 22px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(11, 17, 32, .97), rgba(11, 17, 32, .78));
+    backdrop-filter: blur(10px);
+  }
+
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+  .brand-mark {
+    position: relative;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background: linear-gradient(150deg, rgba(45, 212, 191, .95), rgba(14, 165, 164, .35));
+    box-shadow: 0 0 0 1px rgba(45, 212, 191, .5), 0 0 22px -4px rgba(45, 212, 191, .85);
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 9px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(6, 17, 28, .78);
+  }
+
+  .brand-text { min-width: 0; }
+  .brand-text h1 {
+    margin: 0;
+    font-size: 15.5px;
+    font-weight: 600;
+    letter-spacing: .015em;
+    color: #eef5ff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand-text .sub {
+    margin: 1px 0 0;
+    font-size: 11px;
+    letter-spacing: .09em;
+    color: var(--txt-faint);
+  }
+
+  .live {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, .18);
+    background: rgba(148, 163, 184, .06);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    color: var(--txt-dim);
+    white-space: nowrap;
+  }
+  .live .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4a5b73;
+    transition: background .2s ease, box-shadow .2s ease;
+  }
+  .live.is-live {
+    color: #b9f7e6;
+    border-color: rgba(52, 211, 153, .36);
+    background: rgba(52, 211, 153, .09);
+  }
+  .live.is-live .dot {
+    background: var(--green);
+    animation: breathe 1.8s ease-out infinite;
+  }
+  .live.is-connecting {
+    color: #f7d9a6;
+    border-color: rgba(245, 158, 11, .3);
+    background: rgba(245, 158, 11, .08);
+  }
+  .live.is-connecting .dot { background: var(--amber); animation: blink 1.1s steps(2, end) infinite; }
+  .live.is-off .dot { background: #4a5b73; }
+
+  @keyframes breathe {
+    0%   { box-shadow: 0 0 0 0 rgba(52, 211, 153, .55); }
+    70%  { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+  }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  .top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .chip {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    max-width: min(44vw, 420px);
+    padding: 5px 11px;
+    border-radius: 9px;
+    border: 1px solid rgba(148, 163, 184, .14);
+    background: rgba(15, 26, 46, .72);
+  }
+  .chip-k { flex: 0 0 auto; font-size: 10.5px; letter-spacing: .12em; color: var(--txt-faint); }
+  .chip-v {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: #cfe0f4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ===================== 布局 ===================== */
+  .wrap {
+    max-width: 1680px;
+    margin: 0 auto;
+    padding: 16px 22px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(245, 158, 11, .32);
+    background: rgba(245, 158, 11, .08);
+    color: #fbd8a4;
+    font-size: 12.5px;
+    letter-spacing: .02em;
+  }
+  .banner-dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--amber);
+    animation: blink 1.1s steps(2, end) infinite;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(360px, .95fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  .panel, .card {
+    background: linear-gradient(180deg, var(--panel-top), var(--panel-bot));
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 24px 60px -42px #000, inset 0 1px 0 rgba(255, 255, 255, .03);
+    min-width: 0;
+  }
+  .panel { padding: 13px 14px 12px; }
+  .card { padding: 13px 15px 14px; }
+
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+
+  .panel-title, .card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .16em;
+    color: var(--txt-dim);
+  }
+  .card-title { margin-bottom: 11px; }
+  .card-title::before, .panel-title::before {
+    content: "";
+    width: 3px;
+    height: 11px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, var(--teal-bright), var(--teal));
+    box-shadow: 0 0 10px rgba(45, 212, 191, .8);
+  }
+  .h2-note { font-size: 10px; font-weight: 400; letter-spacing: .06em; color: var(--txt-faint); }
+
+  .panel-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .1em;
+    color: var(--teal);
+    padding: 2px 7px;
+    border-radius: 6px;
+    border: 1px solid rgba(45, 212, 191, .28);
+    background: rgba(45, 212, 191, .07);
+    white-space: nowrap;
+  }
+
+  /* ===================== 实时画面 ===================== */
+  .stream-shell {
+    position: relative;
+    border-radius: 13px;
+    overflow: hidden;
+    background: var(--bg-deep);
+    border: 1px solid var(--line-strong);
+    box-shadow: inset 0 0 70px -24px rgba(45, 212, 191, .35);
+  }
+  .stream-shell > img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    object-fit: contain;
+    background: var(--bg-deep);
+  }
+
+  .corner {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(45, 212, 191, .55);
+    opacity: .75;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .corner.tl { top: 9px; left: 9px; border-right: 0; border-bottom: 0; border-radius: 6px 0 0 0; }
+  .corner.tr { top: 9px; right: 9px; border-left: 0; border-bottom: 0; border-radius: 0 6px 0 0; }
+  .corner.bl { bottom: 9px; left: 9px; border-right: 0; border-top: 0; border-radius: 0 0 0 6px; }
+  .corner.br { bottom: 9px; right: 9px; border-left: 0; border-top: 0; border-radius: 0 0 6px 0; }
+
+  .stream-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 20px;
+    text-align: center;
+    background: radial-gradient(circle at 50% 45%, rgba(11, 17, 32, .74), rgba(5, 9, 15, .92));
+    backdrop-filter: blur(3px);
+  }
+  .stream-overlay.is-error {
+    background: radial-gradient(circle at 50% 45%, rgba(69, 26, 26, .55), rgba(5, 9, 15, .93));
+  }
+  .overlay-text { font-size: 13px; letter-spacing: .06em; color: #d8e6f6; }
+  .stream-overlay.is-error .overlay-text { color: #fca5a5; }
+  .overlay-sub { max-width: 82%; font-size: 11px; letter-spacing: .04em; color: var(--txt-faint); }
+
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 2px solid rgba(45, 212, 191, .18);
+    border-top-color: var(--teal);
+    box-shadow: 0 0 20px -8px rgba(45, 212, 191, .9);
+    animation: spin .9s linear infinite;
+  }
+  .stream-overlay.is-error .spinner {
+    border-color: rgba(248, 113, 113, .18);
+    border-top-color: var(--danger);
+    animation-duration: 2.4s;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .stream-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 12px;
+    margin-top: 10px;
+  }
+  .mini { font-size: 11px; letter-spacing: .02em; color: var(--txt-faint); }
+
+  /* ===================== 大号 KPI ===================== */
+  .kpi-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .kpi {
+    position: relative;
+    overflow: hidden;
+    padding: 11px 12px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(45, 212, 191, .17);
+    background: linear-gradient(160deg, rgba(45, 212, 191, .10), rgba(45, 212, 191, .018));
+  }
+  .kpi::after {
+    content: "";
+    position: absolute;
+    right: -34px;
+    top: -34px;
+    width: 86px;
+    height: 86px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(45, 212, 191, .18), transparent 70%);
+    pointer-events: none;
+  }
+  .kpi .v {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    min-height: 1.1em;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(22px, 2.4vw, 34px);
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -.02em;
+    color: var(--teal-bright);
+    text-shadow: 0 0 26px rgba(45, 212, 191, .42);
+  }
+  .kpi .u {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    color: rgba(45, 212, 191, .72);
+    text-shadow: none;
+    white-space: nowrap;
+  }
+  .kpi .k { margin-top: 4px; font-size: 10.5px; letter-spacing: .1em; color: var(--txt-dim); }
+
+  .kpi.alt {
+    border-color: rgba(148, 163, 184, .16);
+    background: linear-gradient(160deg, rgba(148, 163, 184, .08), rgba(148, 163, 184, .014));
+  }
+  .kpi.alt .v { color: #e9f2fc; text-shadow: 0 0 22px rgba(148, 197, 255, .22); }
+  .kpi.alt .u { color: var(--txt-faint); }
+  .kpi.alt::after { background: radial-gradient(circle, rgba(148, 197, 255, .14), transparent 70%); }
+
+  /* ===================== 分项耗时条形图 ===================== */
+  .bars { display: flex; flex-direction: column; gap: 9px; }
+
+  .bar {
+    display: grid;
+    grid-template-columns: minmax(88px, 108px) minmax(0, 1fr) 62px;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .bar.is-empty { opacity: .55; }
+  .bar .lbl {
+    color: var(--txt-dim);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bar .track {
+    position: relative;
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, .13);
+    overflow: hidden;
+  }
+  .bar .fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #0f8f92, rgba(45, 212, 191, .82));
+    transition: width .35s cubic-bezier(.4, 0, .2, 1);
+  }
+  .bar .fill.is-max {
+    background: linear-gradient(90deg, #14b8a6, #7cf5e2);
+    box-shadow: 0 0 12px rgba(45, 212, 191, .55);
+  }
+  .bar .val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    text-align: right;
+    color: #bcd3ea;
+    white-space: nowrap;
+  }
+
+  /* ===================== 指标小格 ===================== */
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, .10);
+    background: rgba(148, 163, 184, .04);
+    min-width: 0;
+  }
+  .meta .k {
+    font-size: 10.5px;
+    letter-spacing: .05em;
+    color: var(--txt-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meta .v {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 15px;
+    color: #dce8f6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 11px;
+    padding-top: 9px;
+    border-top: 1px dashed rgba(148, 163, 184, .15);
+    font-size: 10.5px;
+    letter-spacing: .05em;
+    color: var(--txt-faint);
+  }
+  .card-foot .foot-v {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: #9fb6d1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ===================== 目标列表 ===================== */
+  .dets-wrap {
+    max-height: 320px;
+    overflow: auto;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, .11);
+    -webkit-overflow-scrolling: touch;
+  }
+  .dets-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+  .dets-wrap::-webkit-scrollbar-thumb {
+    background: rgba(45, 212, 191, .26);
+    border-radius: 999px;
+  }
+  .dets-wrap::-webkit-scrollbar-track { background: transparent; }
+
+  table.dets { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  table.dets thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 7px 10px;
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .07em;
+    color: var(--txt-dim);
+    background: #101d33;
+    border-bottom: 1px solid rgba(148, 163, 184, .16);
+    white-space: nowrap;
+  }
+  table.dets thead th.num { text-align: right; }
+  table.dets tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(148, 163, 184, .07);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: #c9d9ea;
+    white-space: nowrap;
+  }
+  table.dets tbody tr:last-child td { border-bottom: 0; }
+  table.dets tbody tr:hover td { background: rgba(45, 212, 191, .05); }
+  table.dets tbody td.num { text-align: right; }
+  table.dets tbody td.cls { font-family: inherit; color: #dde9f7; }
+  table.dets tbody tr.nearest td { background: rgba(245, 158, 11, .07); }
+  table.dets tbody tr.nearest td.dist { color: var(--amber); }
+
+  .empty {
+    padding: 22px 12px;
+    text-align: center;
+    font-size: 12px;
+    letter-spacing: .04em;
+    color: var(--txt-faint);
+    border: 1px dashed rgba(148, 163, 184, .15);
+    border-radius: 10px;
+    background: rgba(148, 163, 184, .03);
+  }
+
+  /* ===================== 页脚 ===================== */
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px 16px;
+    padding: 2px 4px 0;
+    font-size: 10.5px;
+    color: var(--txt-faint);
+  }
+  .foot code {
+    font-family: var(--mono);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: #93c5c0;
+    background: rgba(45, 212, 191, .07);
+    border: 1px solid rgba(45, 212, 191, .17);
+  }
+
+  .noscript-tip {
+    margin: 0 14px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 158, 11, .3);
+    background: rgba(245, 158, 11, .08);
+    color: #fbd8a4;
+    font-size: 12px;
+  }
+
+  /* ===================== 自适应 ===================== */
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .kpi .v { font-size: clamp(24px, 5vw, 32px); }
+  }
+  @media (max-width: 720px) {
+    .wrap { padding: 12px 12px 22px; }
+    .topbar { padding: 10px 12px; }
+    .brand-text .sub { display: none; }
+    .brand-text h1 { white-space: normal; font-size: 13.5px; }
+    .top-meta { margin-left: 0; width: 100%; }
+    .chip { max-width: 100%; }
+    .meta-grid { grid-template-columns: 1fr 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live.is-live .dot,
+    .live.is-connecting .dot,
+    .banner-dot,
+    .spinner { animation: none; }
+    .bar .fill { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div class="brand-text">
+      <h1>EdgeVision RK3588 · 车载道路实时 3D 感知看板</h1>
+      <p class="sub">道路实景 · 3D 线框 · 自车 BEV 雷达 · 端侧 NPU 实时推理</p>
+    </div>
+  </div>
+
+  <div class="live is-connecting" id="liveChip">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="liveText">连接中…</span>
+  </div>
+
+  <div class="top-meta">
+    <div class="chip"><span class="chip-k">分辨率</span><span class="chip-v" id="tResolution">—</span></div>
+    <div class="chip"><span class="chip-k">视频</span><span class="chip-v" id="tVideo">—</span></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <noscript><p class="noscript-tip">当前浏览器禁用了 JavaScript，实时遥测数据无法刷新；视频流仍可在下方画面中显示。</p></noscript>
+
+  <div class="banner" id="banner" hidden>
+    <span class="banner-dot" aria-hidden="true"></span>
+    <span id="bannerText">与板端 /api/stats 通信中断，正在自动重试…</span>
+  </div>
+
+  <div class="grid">
+    <!-- ========== 主区域：实时画面 ========== -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">实时画面</h2>
+        <span class="panel-tag" id="streamTag">MJPEG</span>
+      </div>
+
+      <div class="stream-shell">
+        <img id="stream" src="/stream" alt="道路实景实时画面（MJPEG 视频流）" />
+        <span class="corner tl" aria-hidden="true"></span>
+        <span class="corner tr" aria-hidden="true"></span>
+        <span class="corner bl" aria-hidden="true"></span>
+        <span class="corner br" aria-hidden="true"></span>
+
+        <div class="stream-overlay" id="streamOverlay">
+          <div class="spinner" aria-hidden="true"></div>
+          <div class="overlay-text" id="overlayText">正在连接视频流…</div>
+          <div class="overlay-sub">画面来自板端推流，断流后会自动重连</div>
+        </div>
+      </div>
+
+      <div class="stream-foot">
+        <span class="mini">推流编码 MJPEG · 3D 线框与 BEV 雷达由板端绘制后推流</span>
+        <span class="mini" id="streamHint">等待数据</span>
+      </div>
+    </section>
+
+    <!-- ========== 侧栏：遥测 + 目标列表 ========== -->
+    <div class="col">
+      <section class="card">
+        <h2 class="card-title">实时性能</h2>
+        <div class="kpi-row">
+          <div class="kpi">
+            <div class="v"><span id="kFps">—</span><span class="u">FPS</span></div>
+            <div class="k">实测全链路帧率</div>
+          </div>
+          <div class="kpi alt">
+            <div class="v"><span id="kTotal">—</span><span class="u">ms/帧</span></div>
+            <div class="k">单帧全链路耗时</div>
+          </div>
+        </div>
+        <div class="card-foot">
+          <span>数据刷新</span>
+          <span class="foot-v" id="kAge">等待数据</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">分项耗时</h2>
+        <div class="bars" id="bars">
+          <div class="bar" data-bar="npu_ms">
+            <span class="lbl">NPU 推理</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+          <div class="bar" data-bar="decode_ms">
+            <span class="lbl">DFL 解码 + NMS</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+          <div class="bar" data-bar="prep_ms">
+            <span class="lbl">预处理</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+          <div class="bar" data-bar="draw_ms">
+            <span class="lbl">绘制</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+          <div class="bar" data-bar="encode_ms">
+            <span class="lbl">JPEG 编码</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+          <div class="bar" data-bar="capture_ms">
+            <span class="lbl">采集 + 解码</span>
+            <span class="track"><i class="fill"></i></span>
+            <span class="val">—</span>
+          </div>
+        </div>
+        <div class="card-foot">
+          <span>条形按当前最大分项归一</span>
+          <span class="foot-v" id="barsMax">—</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">目标与运行状态</h2>
+        <div class="meta-grid">
+          <div class="meta"><span class="k">3D 目标 / 原始检出</span><span class="v" id="mObjects">—</span></div>
+          <div class="meta"><span class="k">已处理帧数</span><span class="v" id="mFrames">—</span></div>
+          <div class="meta"><span class="k">视频圈数</span><span class="v" id="mLoop">—</span></div>
+          <div class="meta"><span class="k">运行时长</span><span class="v" id="mUptime">—</span></div>
+          <div class="meta"><span class="k">JPEG 帧大小</span><span class="v" id="mJpeg">—</span></div>
+          <div class="meta"><span class="k">源帧率</span><span class="v" id="mSrcFps">—</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">3D 目标列表<span class="h2-note">由近到远</span></h2>
+        <div class="dets-wrap" id="detsWrap" hidden>
+          <table class="dets">
+            <thead id="detsHead">
+              <tr>
+                <th>类别</th>
+                <th class="num">置信度</th>
+                <th class="num">纵向距离</th>
+                <th class="num">横向偏移</th>
+              </tr>
+            </thead>
+            <tbody id="detsBody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="detsEmpty">等待数据</div>
+      </section>
+    </div>
+  </div>
+
+  <footer class="foot">
+    <span>遥测数据接口 <code>/api/stats</code> · 视频流 <code>/stream</code> · 单帧快照 <code>/snapshot</code></span>
+    <span>页面显示的全部数值均取自板端实时测量结果</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------------- 常量（刷新节奏 / 重连策略 / 展示上限） ---------------- */
+  var POLL_MS = 500;            // 遥测接口轮询周期
+  var TICK_MS = 250;            // 连接状态与画面状态刷新周期
+  var RECONNECT_MS = 2000;      // 断流后重连延迟
+  var FRESH_MS = 1600;          // 数据被视为“新鲜”的时间窗
+  var FAIL_LIMIT = 4;           // 连续失败次数达到后清空为占位符
+  var FETCH_TIMEOUT_MS = 2500;  // 单次请求超时，避免卡死轮询
+  var DET_VISIBLE_ROWS = 8;     // 目标列表可见行数，超出滚动
+  var STALL_MS = 8000;          // 画面迟迟没出现则主动触发一次重连（兜底漏掉的 error 事件）
+
+  /* ---------------- 常用工具 ---------------- */
+  function $(id) { return document.getElementById(id); }
+
+  function toNum(v) {
+    if (typeof v === 'number') { return isFinite(v) ? v : null; }
+    if (typeof v === 'string' && v.trim() !== '') {
+      var n = parseFloat(v);
+      return isFinite(n) ? n : null;
+    }
+    return null;
+  }
+
+  function numText(v, digits) {
+    var n = toNum(v);
+    return n === null ? '—' : n.toFixed(digits);
+  }
+
+  function intText(v) {
+    var n = toNum(v);
+    return n === null ? '—' : String(Math.round(n));
+  }
+
+  function unitText(v, digits, unit) {
+    var s = numText(v, digits);
+    return s === '—' ? s : s + ' ' + unit;
+  }
+
+  function signedText(v, digits, unit) {
+    var n = toNum(v);
+    if (n === null) { return '—'; }
+    var s = n.toFixed(digits);
+    if (n > 0) { s = '+' + s; }
+    return s + ' ' + unit;
+  }
+
+  function pctText(v) {
+    var n = toNum(v);
+    return n === null ? '—' : (n * 100).toFixed(1) + '%';
+  }
+
+  function kbText(v) {
+    var n = toNum(v);
+    return n === null ? '—' : (n / 1024).toFixed(1) + ' KB';
+  }
+
+  function durText(v) {
+    var n = toNum(v);
+    if (n === null || n < 0) { return '—'; }
+    var total = Math.floor(n);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    function p2(x) { return x < 10 ? '0' + x : String(x); }
+    return h > 0 ? h + ':' + p2(m) + ':' + p2(s) : m + ':' + p2(s);
+  }
+
+  function strOr(v, fallback) {
+    return (typeof v === 'string' && v.trim() !== '') ? v.trim() : fallback;
+  }
+
+  function baseName(p) {
+    var s = strOr(p, '');
+    if (!s) { return '—'; }
+    var parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || s;
+  }
+
+  function setText(node, text) {
+    if (node && node.textContent !== text) { node.textContent = text; }
+  }
+
+  /* COCO 类别中文名，仅做展示映射；未命中时回退到接口原始字符串 */
+  var CLS_ZH = {
+    'person': '行人',
+    'bicycle': '自行车',
+    'car': '汽车',
+    'motorcycle': '摩托车',
+    'airplane': '飞机',
+    'bus': '公交车',
+    'train': '火车',
+    'truck': '卡车',
+    'boat': '船',
+    'traffic light': '红绿灯',
+    'fire hydrant': '消防栓',
+    'stop sign': '停止标志',
+    'parking meter': '停车计时器',
+    'cat': '猫',
+    'dog': '狗',
+    'horse': '马',
+    'sheep': '羊',
+    'cow': '牛',
+    'elephant': '大象',
+    'bear': '熊',
+    'zebra': '斑马',
+    'giraffe': '长颈鹿'
+  };
+
+  function clsText(v) {
+    if (v === null || v === undefined) { return '—'; }
+    var raw = String(v);
+    var key = raw.trim().toLowerCase();
+    return CLS_ZH[key] || raw;
+  }
+
+  /* 目标距离：接口给的 dist_m 为准（契约里它就是排序键），缺失时由 x_m / y_m 反算，
+     保证「显示的列」与「排序的键」永远同源 —— 列表看到的距离一定是单调递增的。 */
+  function detDistance(d) {
+    var dist = toNum(d.dist_m);
+    if (dist !== null) { return dist; }
+    var x = toNum(d.x_m);
+    var y = toNum(d.y_m);
+    if (x === null && y === null) { return null; }
+    if (y === null) { return Math.abs(x); }
+    if (x === null) { return Math.abs(y); }
+    return Math.sqrt(x * x + y * y);
+  }
+
+  /* ---------------- DOM 缓存 ---------------- */
+  var dom = { bars: [] };
+
+  function cacheDom() {
+    dom.streamImg = $('stream');
+    dom.streamOverlay = $('streamOverlay');
+    dom.overlayText = $('overlayText');
+    dom.streamHint = $('streamHint');
+    dom.liveChip = $('liveChip');
+    dom.liveText = $('liveText');
+    dom.banner = $('banner');
+    dom.bannerText = $('bannerText');
+    dom.tResolution = $('tResolution');
+    dom.tVideo = $('tVideo');
+    dom.kFps = $('kFps');
+    dom.kTotal = $('kTotal');
+    dom.kAge = $('kAge');
+    dom.barsMax = $('barsMax');
+    dom.mObjects = $('mObjects');
+    dom.mFrames = $('mFrames');
+    dom.mLoop = $('mLoop');
+    dom.mUptime = $('mUptime');
+    dom.mJpeg = $('mJpeg');
+    dom.mSrcFps = $('mSrcFps');
+    dom.detsWrap = $('detsWrap');
+    dom.detsHead = $('detsHead');
+    dom.detsBody = $('detsBody');
+    dom.detsEmpty = $('detsEmpty');
+
+    dom.bars = [];
+    var nodes = document.querySelectorAll('.bar');
+    for (var i = 0; i < nodes.length; i++) {
+      dom.bars.push({
+        key: nodes[i].getAttribute('data-bar'),
+        root: nodes[i],
+        lbl: nodes[i].querySelector('.lbl'),
+        fill: nodes[i].querySelector('.fill'),
+        val: nodes[i].querySelector('.val')
+      });
+    }
+  }
+
+  /* ---------------- 渲染：分项耗时 ---------------- */
+  function renderBars(stats) {
+    var vals = [];
+    var max = 0;
+    var maxIdx = -1;
+    var i;
+
+    for (i = 0; i < dom.bars.length; i++) {
+      var v = stats ? toNum(stats[dom.bars[i].key]) : null;
+      vals.push(v);
+      if (v !== null && v > max) { max = v; maxIdx = i; }
+    }
+
+    for (i = 0; i < dom.bars.length; i++) {
+      var bar = dom.bars[i];
+      var cur = vals[i];
+      var width = (cur !== null && max > 0) ? (cur / max) * 100 : 0;
+      if (bar.fill) {
+        bar.fill.style.width = (width > 0 ? width.toFixed(2) : '0') + '%';
+        if (bar.fill.classList) { bar.fill.classList.toggle('is-max', i === maxIdx); }
+      }
+      if (bar.root.classList) { bar.root.classList.toggle('is-empty', cur === null); }
+      setText(bar.val, cur === null ? '—' : cur.toFixed(2) + ' ms');
+    }
+
+    if (maxIdx >= 0 && max > 0) {
+      var name = dom.bars[maxIdx].lbl ? dom.bars[maxIdx].lbl.textContent : dom.bars[maxIdx].key;
+      setText(dom.barsMax, '最大 ' + name + ' ' + max.toFixed(2) + ' ms');
+    } else {
+      setText(dom.barsMax, '—');
+    }
+  }
+
+  /* ---------------- 渲染：目标列表 ---------------- */
+  function makeCell(text, cls) {
+    var td = document.createElement('td');
+    td.textContent = text;
+    if (cls) { td.className = cls; }
+    return td;
+  }
+
+  function fitDetsScroll() {
+    if (!dom.detsWrap || dom.detsWrap.hidden) { return; }
+    var headH = dom.detsHead ? dom.detsHead.offsetHeight : 0;
+    var rowH = 0;
+    if (dom.detsBody && dom.detsBody.rows.length > 0) {
+      rowH = dom.detsBody.rows[0].offsetHeight;
+    }
+    if (headH > 0 && rowH > 0) {
+      dom.detsWrap.style.maxHeight = (headH + rowH * DET_VISIBLE_ROWS) + 'px';
+    }
+  }
+
+  function renderDets(dets, waiting) {
+    var body = dom.detsBody;
+    while (body.firstChild) { body.removeChild(body.firstChild); }
+    if (dom.detsWrap) { dom.detsWrap.style.maxHeight = ''; }
+
+    if (!Array.isArray(dets) || dets.length === 0) {
+      dom.detsWrap.hidden = true;
+      dom.detsEmpty.hidden = false;
+      setText(dom.detsEmpty, waiting ? '等待数据' : '当前帧无 3D 目标');
+      return;
+    }
+
+    var rows = dets.filter(function (d) { return d && typeof d === 'object'; });
+    rows.sort(function (a, b) {
+      var da = detDistance(a);
+      var db = detDistance(b);
+      if (da === null && db === null) { return 0; }
+      if (da === null) { return 1; }
+      if (db === null) { return -1; }
+      return da - db;
+    });
+
+    if (rows.length === 0) {
+      dom.detsWrap.hidden = true;
+      dom.detsEmpty.hidden = false;
+      setText(dom.detsEmpty, waiting ? '等待数据' : '当前帧无 3D 目标');
+      return;
+    }
+
+    dom.detsWrap.hidden = false;
+    dom.detsEmpty.hidden = true;
+
+    for (var i = 0; i < rows.length; i++) {
+      var d = rows[i];
+      var tr = document.createElement('tr');
+      if (i === 0) { tr.className = 'nearest'; }
+      tr.appendChild(makeCell(clsText(d.cls), 'cls'));
+      tr.appendChild(makeCell(pctText(d.score), 'num'));
+      tr.appendChild(makeCell(unitText(detDistance(d), 1, 'm'), 'num dist'));
+      tr.appendChild(makeCell(signedText(d.y_m, 1, 'm'), 'num'));
+      body.appendChild(tr);
+    }
+
+    fitDetsScroll();
+  }
+
+  /* ---------------- 渲染：整页数据 ---------------- */
+  function renderStats(stats, waiting) {
+    var s = stats || {};
+
+    setText(dom.kFps, numText(s.pipeline_fps, 1));
+    setText(dom.kTotal, numText(s.total_ms, 1));
+
+    setText(dom.tResolution, strOr(s.resolution, '—'));
+    setText(dom.tVideo, baseName(s.video));
+
+    setText(dom.mObjects, intText(s.objects_3d) + ' / ' + intText(s.objects_total));
+    setText(dom.mFrames, intText(s.frame_id));
+    setText(dom.mLoop, intText(s.loop_index));
+    setText(dom.mUptime, durText(s.uptime_s));
+    setText(dom.mJpeg, kbText(s.jpeg_bytes));
+    setText(dom.mSrcFps, s.source_fps === undefined || s.source_fps === null ? '—' : unitText(s.source_fps, 1, 'fps'));
+
+    renderBars(stats);
+    renderDets(s.dets, waiting);
+  }
+
+  /* ---------------- 连接状态 ---------------- */
+  var state = {
+    polling: false,
+    failCount: 0,
+    lastOkAt: 0,
+    hasStats: false,
+    streamFailed: false,
+    reconnectTimer: null,
+    reconnectCount: 0,
+    streamStartedAt: Date.now(),
+    streamEverReady: false
+  };
+
+  function apiFresh() {
+    return state.lastOkAt > 0 && (Date.now() - state.lastOkAt) <= FRESH_MS;
+  }
+
+  function streamReady() {
+    var img = dom.streamImg;
+    if (!img) { return false; }
+    return !state.streamFailed && img.complete && img.naturalWidth > 0;
+  }
+
+  function refreshStreamOverlay() {
+    if (!dom.streamOverlay) { return; }
+    var ready = streamReady();
+    dom.streamOverlay.hidden = ready;
+
+    if (ready) {
+      dom.streamOverlay.classList.remove('is-error');
+    } else if (state.streamFailed) {
+      dom.streamOverlay.classList.add('is-error');
+      setText(dom.overlayText, '视频流已断开 · 2 秒后自动重连');
+    } else {
+      dom.streamOverlay.classList.remove('is-error');
+      setText(dom.overlayText, '正在连接视频流…');
+    }
+
+    if (dom.streamHint) {
+      if (ready) {
+        setText(dom.streamHint, '推流中');
+      } else if (state.streamFailed) {
+        setText(dom.streamHint, '断流 · 自动重连中（第 ' + state.reconnectCount + ' 次）');
+      } else {
+        setText(dom.streamHint, '等待画面');
+      }
+    }
+  }
+
+  function scheduleStreamReconnect() {
+    if (state.reconnectTimer !== null) { return; }
+    state.reconnectTimer = window.setTimeout(function () {
+      state.reconnectTimer = null;
+      state.streamFailed = false;
+      state.reconnectCount += 1;
+      state.streamStartedAt = Date.now();
+      /* 追加时间戳参数，绕过浏览器缓存，保证拿到新的一路流 */
+      dom.streamImg.src = '/stream?t=' + Date.now() + '&r=' + state.reconnectCount;
+      refreshStreamOverlay();
+    }, RECONNECT_MS);
+  }
+
+  /* 兜底：某些浏览器在监听器绑定前就可能派发 error，或长时间收不到首帧。
+     这里只判状态，不重复打断正在正常工作的流。 */
+  function checkStreamStall() {
+    if (streamReady()) {
+      state.streamEverReady = true;
+      return;
+    }
+    if (state.streamFailed) { return; }
+    if (document.hidden) { return; }
+    if ((Date.now() - state.streamStartedAt) > STALL_MS) { triggerStreamReconnect(); }
+  }
+
+  function triggerStreamReconnect() {
+    state.streamFailed = true;
+    refreshStreamOverlay();
+    scheduleStreamReconnect();
+  }
+
+  function bindStream() {
+    if (!dom.streamImg) { return; }
+
+    dom.streamImg.addEventListener('error', function () {
+      triggerStreamReconnect();
+    });
+
+    dom.streamImg.addEventListener('load', function () {
+      state.streamEverReady = true;
+      refreshStreamOverlay();
+    });
+  }
+
+  function refreshChrome() {
+    var fresh = apiFresh();
+    var ready = streamReady();
+    var live = fresh && ready;
+    /* 从未拿到过数据、且连续失败达到阈值 —— 判为「连不上」，不要一直挂在「连接中…」 */
+    var neverConnected = !state.hasStats && state.failCount >= FAIL_LIMIT;
+    var mode;
+
+    if (live) {
+      mode = 'is-live';
+    } else if (state.hasStats || state.streamFailed || neverConnected) {
+      mode = 'is-off';
+    } else {
+      mode = 'is-connecting';
+    }
+
+    if (dom.liveChip) { dom.liveChip.className = 'live ' + mode; }
+    setText(dom.liveText, live ? 'LIVE' : (mode === 'is-connecting' ? '连接中…' : '已断开'));
+
+    if (dom.banner) {
+      var lostAfterOk = state.hasStats && !fresh;
+      var showBanner = lostAfterOk || neverConnected;
+      dom.banner.hidden = !showBanner;
+      if (showBanner) {
+        setText(dom.bannerText, lostAfterOk
+          ? '与板端 /api/stats 通信中断，正在自动重试…'
+          : '尚未收到板端 /api/stats 响应，正在自动重试…');
+      }
+    }
+
+    if (dom.kAge) {
+      if (fresh) {
+        setText(dom.kAge, ((Date.now() - state.lastOkAt) / 1000).toFixed(1) + ' s 前');
+      } else if (state.hasStats) {
+        setText(dom.kAge, '信号中断');
+      } else {
+        setText(dom.kAge, '等待数据');
+      }
+    }
+  }
+
+  function tick() {
+    checkStreamStall();
+    refreshChrome();
+    refreshStreamOverlay();
+  }
+
+  /* ---------------- 轮询 /api/stats ---------------- */
+  async function pollStats() {
+    if (state.polling) { return; }
+    state.polling = true;
+
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = null;
+
+    try {
+      if (ctrl) {
+        timer = window.setTimeout(function () {
+          try { ctrl.abort(); } catch (e) { /* 已结束则忽略 */ }
+        }, FETCH_TIMEOUT_MS);
+      }
+
+      var opts = { cache: 'no-store' };
+      if (ctrl) { opts.signal = ctrl.signal; }
+
+      var res = await fetch('/api/stats', opts);
+      if (!res || !res.ok) { throw new Error('HTTP ' + (res ? res.status : '无响应')); }
+
+      var data = await res.json();
+      if (!data || typeof data !== 'object') { throw new Error('返回内容不是 JSON 对象'); }
+
+      state.hasStats = true;
+      state.failCount = 0;
+      state.lastOkAt = Date.now();
+
+      try {
+        renderStats(data, false);
+      } catch (renderErr) {
+        console.error('[dashboard] 渲染遥测数据时出错：', renderErr);
+      }
+    } catch (err) {
+      state.failCount += 1;
+      if (state.failCount >= FAIL_LIMIT) {
+        try {
+          renderStats(null, true);
+        } catch (renderErr) {
+          console.error('[dashboard] 清空遥测数据显示时出错：', renderErr);
+        }
+      }
+      console.warn('[dashboard] 拉取 /api/stats 失败：', (err && err.message) ? err.message : err);
+    } finally {
+      if (timer !== null) { window.clearTimeout(timer); }
+      state.polling = false;
+      refreshChrome();
+    }
+  }
+
+  /* ---------------- 启动 ---------------- */
+  function init() {
+    cacheDom();
+    bindStream();
+    refreshChrome();
+    refreshStreamOverlay();
+
+    pollStats();
+    window.setInterval(pollStats, POLL_MS);
+    window.setInterval(tick, TICK_MS);
+
+    window.addEventListener('resize', function () {
+      fitDetsScroll();
+    });
+    window.addEventListener('orientationchange', function () {
+      fitDetsScroll();
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
