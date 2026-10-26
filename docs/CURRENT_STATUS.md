@@ -5,7 +5,7 @@
 ## 一句话
 RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
-> 最后一次更新:**2026-10-25 晚 · 转入面试准备**(开发线收尾;新增面试冲刺材料 W5/W6 + `docs/INTERVIEW_PREP_PLAN.md` + 三份过期材料校准,见文末「面试材料」节)
+> 最后一次更新:**2026-10-26 · 实习简历定稿 v12 (DOCX/PDF 双格式 Exactly 1 Page)**(全面同步 DFL-Free 57% 优化、COCO128 mAP 0.6002、MPP 硬件解码 1.03ms、Qwen3.5-2B 单板具身 Agent 硬件闭环)
 
 ## 现在能干什么
 - SSH 板子:`ssh root@<board-ip>`(**已配免密**;别名 `ssh rk3588`;有线。IP 与密码见本地私密记录,不入库)
@@ -89,7 +89,8 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
      用 MPP 源码编译静态库一行不改直接通（TROUBLESHOOTING 第 17 条）
    - **全链路真实闭环验证**：`edgevision_pro_rknn`（MPP硬解→CSC→letterbox→NPU→BEV投影）
      real_000.jpg 检出 `person 0.813 → dist 5.89m`，COCO 图 6 检出，分数与历史 0.8072/0.60 mAP 口径一致
-   - 旧版 `zero_copy_pipeline.hpp`（假数据, fd 硬编码）已废弃铲除，`edgevision_pro_main.cpp` 全真链路重写
+   - 旧版 `zero_copy_pipeline.hpp`（假数据, fd 硬编码）已废弃铲除，`edgevision_pro_main.cpp` 全真链路重写；
+   - **README 旗舰 3D BEV 实测演示图去伪存真完成(2026-10-26)**：彻底废弃旧 PC ONNX 仿真假图，用板端原生 C++ 生产程序 `edgevision_pro_rknn`（MPP 硬解 NV12 + 定点 CSC + RKNN DFL-Free INT8 + BEVProjector 几何反投影）重新在真机上跑通真实道路数据，吐出真实 3D 边界框、BEV 鸟瞰雷达与真实 HUD（NPU 19.3ms, MPP 3.3ms），覆盖更新 `docs/images/bev_demo_snapshot.png`。
    - 剩余优化项：① ~~CMAKE_BUILD_TYPE=Release~~ ✅ **已完成（2026-10-25）**，见下方专节；
      ② CSC 51~65ms 主因是 CPU 读 uncached DRM 内存（memcpy 仅 188MB/s）→ 正解 RGA 硬件转换
      （本板 RGA 2.1.0 不支持 full CSC，颜色偏差 ±13% 待量化）**← 现在这是 CPU 侧第一优先项**；
@@ -242,6 +243,8 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 | 文件 | 内容 | 干什么用 |
 |---|---|---|
 | `docs/INTERVIEW_PREP_PLAN.md` | 7 天排期 / **两分钟项目自述逐字稿(约 110 秒)** / 五条杀手故事(各 90 秒) / 红线表(9 条绝对不能说) / 被问倒怎么办 / 反问 / 投递前清单 | **这是总入口,先看这份** |
+| `docs/陈创荣_端侧AI部署_研一实习简历_v12.docx` / `.pdf` | **端侧AI部署版 v12（严格 1 页 A4）**：聚焦 DFL-Free 实测（纯推理 15.95ms/全链路 20.58ms/48.6 FPS）、INT8 COCO128 mAP 0.6002（-1.4%）、MPP 硬解 1.03ms（7.6×）、Qwen3.5-2B 单板 Tool Calling 闭环 | **端侧算法/部署岗主力简历** |
+| `docs/陈创荣_Linux应用开发_研一实习简历_v12.docx` / `.pdf` | **Linux应用开发版 v12（严格 1 页 A4）**：技能重排突出 C++/并发/Socket网络/系统服务/外设驱动/构建优化；项目语言转换为系统工程（有界队列0丢帧、定长帧二进制推流、背压丢旧防积压、Cache优化、CMake -O3 重构、驱动版本倒挂排错）；AI 作为异构计算壁垒加分项 | **嵌入式 Linux / C++ 软件岗主力简历** |
 | `docs/interview-recap/W5-端侧推理部署.md` | RKNN 量化、DFL 图手术、三核调度、逐层剖析、**测量方法论**、编译优化、MPP 一正一负、边界 | 端侧 AI 部署岗第一主力 |
 | `docs/interview-recap/W6-端侧Agent.md` | RKLLM 部署、Tool Calling、5 个硬件工具、快慢双系统、**三个真缺陷复盘**、回归体系、边界 | 差异化卖点 |
 

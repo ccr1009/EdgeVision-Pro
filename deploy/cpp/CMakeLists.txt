@@ -112,7 +112,7 @@ if(CROSS_COMPILE_RK3588)
     endif()
 
     # OpenCV (板上 4.5.1, edgevision_pro 的 letterbox 用)
-    find_package(OpenCV QUIET COMPONENTS core imgproc)
+    find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs)
     if(OpenCV_FOUND)
         message(STATUS "OpenCV found: ${OpenCV_VERSION}")
         add_definitions(-DHAVE_OPENCV)
@@ -159,7 +159,7 @@ else()
     target_link_libraries(edgevision_x86 pthread)
 
     # edgevision_pro 依赖 OpenCV (letterbox), 没有 OpenCV 就整个跳过
-    find_package(OpenCV QUIET COMPONENTS core imgproc)
+    find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs)
     if(OpenCV_FOUND)
         add_executable(edgevision_pro src/edgevision_pro_main.cpp ${COMMON_SOURCES})
         target_link_libraries(edgevision_pro pthread ${OpenCV_LIBS})

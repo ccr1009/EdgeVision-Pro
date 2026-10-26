@@ -54,9 +54,9 @@ public:
         // Transform ray to vehicle frame:
         // R_v_c = R_base^T * R_pitch^T
         // Vehicle forward x_v, left y_v, up z_v
-        float r_vx = cp_ * z_c - sp_ * y_c;
+        float r_vx = sp_ * y_c + cp_ * z_c;
         float r_vy = -x_c;
-        float r_vz = -(sp_ * z_c + cp_ * y_c);
+        float r_vz = sp_ * z_c - cp_ * y_c;
 
         if (r_vz >= -1e-5f) {
             return false; // Above horizon

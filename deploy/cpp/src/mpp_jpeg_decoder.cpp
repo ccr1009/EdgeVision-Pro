@@ -66,8 +66,8 @@ int MppJpegDecoder::init(int max_width, int max_height) {
     ret = mpp_buffer_group_get_internal(&in_grp_, MPP_BUFFER_TYPE_DRM);
     if (ret) { last_error_ = "in buffer group failed ret=" + std::to_string(ret); cleanup(); return ret; }
 
-    // 单帧上限按 max_width/8 估算 (1280x720 JPEG 约 60KB, 留足余量)
-    in_buf_size_ = static_cast<size_t>(hstr) * vstr / 4;
+    // 单帧输入 DRM 缓冲上限: 保守分配 hstr * vstr (支持高码率/大画幅 JPEG, 1080p 约 2MB)
+    in_buf_size_ = std::max(static_cast<size_t>(hstr) * vstr, static_cast<size_t>(2 * 1024 * 1024));
     ret = mpp_buffer_get(in_grp_, &in_buf_, in_buf_size_);
     if (ret) { last_error_ = "in buffer get failed ret=" + std::to_string(ret); cleanup(); return ret; }
 
