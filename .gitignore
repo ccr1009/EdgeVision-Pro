@@ -55,7 +55,8 @@ lab/_p6_*.sh
 # 从板子回拉的临时副本
 *.from_board
 tmp/
+# 历史护栏：2026-10-27 工作区规范化后，回归结果已迁到 <工作区>/_workbench/test_results/
+# （在仓库外，天然不会被提交）。这三行留着只为防止有人在仓库内重建同名目录。
 _test_results/
-# 回归测试的输出目录（保留占位 README，结果不入库）
 lab/agent_test_results/*
 !lab/agent_test_results/README.txt
