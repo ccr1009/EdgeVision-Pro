@@ -27,6 +27,153 @@
 #include <rknn_api.h>
 
 #include "postprocess_dfl_free.h"
+#include "bev_projector.hpp"
+
+using namespace edgevision;
+
+static const cv::Scalar PALETTE[] = {
+    cv::Scalar(255, 160, 40),  // Vivid Cyan-Blue (BGR)
+    cv::Scalar(0, 220, 255),    // Amber Yellow
+    cv::Scalar(80, 240, 100),   // Bright Green
+    cv::Scalar(255, 60, 240),   // Magenta Pink
+    cv::Scalar(240, 240, 40),   // Cyan
+    cv::Scalar(0, 180, 255)     // Orange
+};
+
+static bool is_traffic_class(int id) {
+    // 0=person, 1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck
+    return (id == 0 || id == 1 || id == 2 || id == 3 || id == 5 || id == 7);
+}
+
+static void draw_3d_box(cv::Mat& img, const Box3D& box, const cv::Scalar& color, int thickness = 2) {
+    if (box.corners_2d.size() != 8) return;
+    const auto& c = box.corners_2d;
+
+    // 1. Bottom face (0, 1, 2, 3)
+    for (int i = 0; i < 4; ++i) {
+        cv::line(img, cv::Point((int)c[i].u, (int)c[i].v),
+                      cv::Point((int)c[(i + 1) % 4].u, (int)c[(i + 1) % 4].v), color, thickness);
+    }
+    // 2. Top face (4, 5, 6, 7)
+    for (int i = 0; i < 4; ++i) {
+        cv::line(img, cv::Point((int)c[i + 4].u, (int)c[i + 4].v),
+                      cv::Point((int)c[((i + 1) % 4) + 4].u, (int)c[((i + 1) % 4) + 4].v), color, thickness);
+    }
+    // 3. Vertical pillars
+    for (int i = 0; i < 4; ++i) {
+        cv::line(img, cv::Point((int)c[i].u, (int)c[i].v),
+                      cv::Point((int)c[i + 4].u, (int)c[i + 4].v), color, thickness);
+    }
+    // 4. Front face cross (0-5, 1-4)
+    cv::Scalar front_color(255, 128, 0); // Orange/Cyan accent
+    cv::line(img, cv::Point((int)c[0].u, (int)c[0].v),
+                  cv::Point((int)c[5].u, (int)c[5].v), front_color, 1);
+    cv::line(img, cv::Point((int)c[1].u, (int)c[1].v),
+                  cv::Point((int)c[4].u, (int)c[4].v), front_color, 1);
+
+    // 5. Distance label above box with dark background
+    char dist_str[32];
+    snprintf(dist_str, sizeof(dist_str), "%.1fm", box.distance_m);
+    int tx = (int)c[4].u;
+    int ty = std::max(18, (int)c[4].v - 6);
+    int baseline = 0;
+    cv::Size tsz = cv::getTextSize(dist_str, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline);
+    cv::rectangle(img, cv::Rect(tx - 2, ty - tsz.height - 2, tsz.width + 4, tsz.height + 4),
+                  cv::Scalar(18, 22, 26), -1);
+    cv::rectangle(img, cv::Rect(tx - 2, ty - tsz.height - 2, tsz.width + 4, tsz.height + 4),
+                  color, 1);
+    cv::putText(img, dist_str, cv::Point(tx, ty),
+                cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+}
+
+static cv::Mat render_bev_radar(int radar_size, float range_fwd, float range_lat,
+                                const std::vector<std::pair<std::string, Box3D>>& objects) {
+    cv::Mat canvas(radar_size, radar_size, CV_8UC3, cv::Scalar(20, 24, 28));
+    int ego_u = radar_size / 2;
+    int ego_v = radar_size - 25;
+    float scale_fwd = (ego_v - 20) / range_fwd;
+    float scale_lat = (radar_size / 2.0f - 15) / range_lat;
+
+    auto v2c = [&](float X_v, float Y_v) -> cv::Point {
+        int u = (int)std::round(ego_u - Y_v * scale_lat);
+        int v = (int)std::round(ego_v - X_v * scale_fwd);
+        return cv::Point(u, v);
+    };
+
+    // Concentric circles
+    cv::Scalar ring_color(45, 55, 65);
+    cv::Scalar text_color(120, 140, 160);
+    for (float dist_m : {10.0f, 20.0f, 30.0f, 40.0f, 50.0f}) {
+        if (dist_m <= range_fwd) {
+            int radius_px = (int)std::round(dist_m * scale_fwd);
+            cv::circle(canvas, cv::Point(ego_u, ego_v), radius_px, ring_color, 1, cv::LINE_AA);
+            char lbl[16];
+            snprintf(lbl, sizeof(lbl), "%dm", (int)dist_m);
+            cv::putText(canvas, lbl, cv::Point(ego_u + 6, ego_v - radius_px + 12),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.32, text_color, 1, cv::LINE_AA);
+        }
+    }
+
+    // Lateral grid lines
+    for (float lat_m : {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f}) {
+        cv::Point p = v2c(0.0f, lat_m);
+        if (p.x >= 10 && p.x < radar_size - 10) {
+            cv::Scalar col = (lat_m == 0.0f) ? cv::Scalar(50, 65, 80) : cv::Scalar(35, 42, 50);
+            int th = (lat_m == 0.0f) ? 2 : 1;
+            cv::line(canvas, cv::Point(p.x, 20), cv::Point(p.x, ego_v), col, th);
+        }
+    }
+
+    // Camera FOV cone
+    float fov_rad = 32.5f * 3.14159265f / 180.0f;
+    float max_y = range_fwd * std::tan(fov_rad);
+    cv::Point p_left = v2c(range_fwd, max_y);
+    cv::Point p_right = v2c(range_fwd, -max_y);
+    cv::line(canvas, cv::Point(ego_u, ego_v), p_left, cv::Scalar(40, 70, 90), 1, cv::LINE_AA);
+    cv::line(canvas, cv::Point(ego_u, ego_v), p_right, cv::Scalar(40, 70, 90), 1, cv::LINE_AA);
+
+    // Ego vehicle icon
+    std::vector<cv::Point> ego_pts = {
+        {ego_u, ego_v - 12},
+        {ego_u - 7, ego_v + 6},
+        {ego_u, ego_v + 2},
+        {ego_u + 7, ego_v + 6}
+    };
+    cv::fillPoly(canvas, std::vector<std::vector<cv::Point>>{ego_pts}, cv::Scalar(0, 220, 255));
+
+    // Title
+    cv::putText(canvas, "BEV RADAR (ISO Ego)", cv::Point(12, 18),
+                cv::FONT_HERSHEY_SIMPLEX, 0.40, cv::Scalar(0, 255, 200), 1, cv::LINE_AA);
+
+    // Dynamic obstacle blips
+    int idx = 0;
+    for (const auto& item : objects) {
+        const std::string& cls = item.first;
+        const Box3D& b = item.second;
+        if (b.longitudinal_m < 0.5f || b.longitudinal_m > range_fwd) continue;
+        cv::Point c = v2c(b.longitudinal_m, b.lateral_m);
+        if (c.x < 0 || c.x >= radar_size || c.y < 0 || c.y >= radar_size) continue;
+
+        int half_w = std::max(2, (int)std::round((b.dims.y / 2.0f) * scale_lat));
+        int half_l = std::max(3, (int)std::round((b.dims.x / 2.0f) * scale_fwd));
+
+        cv::Scalar fill_col(255, 160, 40); // Cyan-blue BGR
+        cv::Scalar edge_col(255, 220, 100);
+        if (cls == "person") {
+            fill_col = cv::Scalar(40, 220, 255);
+            edge_col = cv::Scalar(100, 255, 255);
+        }
+
+        cv::rectangle(canvas, cv::Rect(c.x - half_w, c.y - half_l, half_w * 2, half_l * 2), fill_col, -1);
+        cv::rectangle(canvas, cv::Rect(c.x - half_w, c.y - half_l, half_w * 2, half_l * 2), edge_col, 1);
+
+        char tag[32];
+        snprintf(tag, sizeof(tag), "#%d:%.1fm", ++idx, b.distance_m);
+        cv::putText(canvas, tag, cv::Point(c.x + half_w + 3, c.y + 4),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.38, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    }
+    return canvas;
+}
 
 #define HTTP_PORT 8080
 #define MODEL_PATH "/root/edgevision/data/models/yolov8n_dflfree_rk3588_i8.rknn"
@@ -90,7 +237,7 @@ static void send_all(int fd, const char* data, size_t len) {
 static const char* kIndexHtml = R"HTML(<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EdgeVision RK3588 · 实时预览</title>
+<title>EdgeVision RK3588 · 3D 感知与 BEV 雷达实时流</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -108,12 +255,11 @@ a{color:#7dd3fc;text-decoration:none}
 a:hover{text-decoration:underline}
 </style></head>
 <body>
-<header><span class="dot" id="dot"></span><h1>EdgeVision RK3588 · DFL-Free INT8 实时预览</h1><span class="sub" id="st">连接中…</span></header>
+<header><span class="dot" id="dot"></span><h1>EdgeVision RK3588 · 3D 感知 + 自车 BEV 雷达实时流</h1><span class="sub" id="st">连接中…</span></header>
 <main><div class="frame"><img id="v" src="/stream" alt="live"></div></main>
 <footer>
-每帧链路：UVC 采集 → letterbox 640×640 → NPU 三核推理 → DFL 解码 + NMS → 画框 → JPEG<br>
-单帧快照：<a href="/snapshot">/snapshot</a> ｜ 原始流：<a href="/stream">/stream</a><br>
-看不到框？把目标放到画面中间——占比太小时置信度会掉到阈值 0.25 以下。
+端侧实时链路：视频/摄像头取流 → letterbox 640×640 → NPU 三核硬绑定推理 → DFL 解码 + NMS → 单目 3D 反投影 → 自车 BEV 雷达网格合成 → HTTP 8080 MJPEG 推流<br>
+单帧快照：<a href="/snapshot">/snapshot</a> ｜ 原始流：<a href="/stream">/stream</a> ｜ 延迟：NPU ~19ms + 解码 ~1.2ms
 </footer>
 <script>
 var img=document.getElementById('v'),st=document.getElementById('st'),dot=document.getElementById('dot');
@@ -254,14 +400,23 @@ int main(int argc, char* argv[]) {
     if (bi < 0 || ci < 0) { std::cerr << "[-] 输出识别失败\n"; return 1; }
     printf("[+] 输出: raw_box idx=%d(nhwc=%d)  cls_sig idx=%d(nhwc=%d)\n", bi, bnhwc, ci, cnhwc);
 
-    cv::VideoCapture cap(dev_path, cv::CAP_V4L2);
-    if (!cap.isOpened()) { std::cerr << "[-] 无法打开摄像头: " << dev_path << "\n"; return 1; }
-    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
-
-    cv::Mat warm;
-    for (int i = 0; i < 15; ++i) cap >> warm;   // AE 预热收敛
+    bool is_video_file = (strncmp(dev_path, "/dev/video", 10) != 0);
+    cv::VideoCapture cap;
+    if (is_video_file) {
+        cap.open(dev_path);
+        if (!cap.isOpened()) { std::cerr << "[-] 无法打开视频文件: " << dev_path << "\n"; return 1; }
+        printf("[+] 已打开视频文件: %s (自动循环推流)\n", dev_path);
+    } else {
+        cap.open(dev_path, cv::CAP_V4L2);
+        if (!cap.isOpened()) { std::cerr << "[-] 无法打开摄像头: " << dev_path << "\n"; return 1; }
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
+        cap.set(cv::CAP_PROP_FPS, 30);
+        cv::Mat warm;
+        for (int i = 0; i < 15; ++i) cap >> warm;   // AE 预热收敛
+        printf("[+] 已打开摄像头: %s @ 1280x720 30FPS\n", dev_path);
+    }
 
     pthread_t http_tid;
     pthread_create(&http_tid, nullptr, http_server_thread, nullptr);
@@ -274,9 +429,17 @@ int main(int argc, char* argv[]) {
 
     while (g_running) {
         auto tA = std::chrono::steady_clock::now();
-        cap >> bgr;                       // 含 UVC 取流 + MJPG 解码
+        cap >> bgr;
         auto tB = std::chrono::steady_clock::now();
-        if (bgr.empty()) { usleep(5000); continue; }
+        if (bgr.empty()) {
+            if (is_video_file) {
+                cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                continue;
+            } else {
+                usleep(5000);
+                continue;
+            }
+        }
         frame_id++;
 
         float scale = 1.f;
@@ -307,38 +470,76 @@ int main(int argc, char* argv[]) {
         const double npu_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         const double dec_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
 
-        // 把 640 letterbox 坐标还原到原始画面
-        for (const auto& d : dets) {
-            int x1 = (int)((d.x1 - pad_x) / scale);
-            int y1 = (int)((d.y1 - pad_y) / scale);
-            int x2 = (int)((d.x2 - pad_x) / scale);
-            int y2 = (int)((d.y2 - pad_y) / scale);
-            x1 = std::max(0, std::min(x1, bgr.cols - 1));
-            x2 = std::max(0, std::min(x2, bgr.cols - 1));
-            y1 = std::max(0, std::min(y1, bgr.rows - 1));
-            y2 = std::max(0, std::min(y2, bgr.rows - 1));
+        // 动态适配相机内参与 BEV 参数 (1080P 车载道路 vs 720P 默认)
+        bool is_1080p = (bgr.cols >= 1920);
+        float hfov = is_1080p ? 72.0f : 65.0f;
+        float mount_h = is_1080p ? 1.50f : 1.60f;
+        float pitch = is_1080p ? 3.5f : 8.0f;
+        float range_fwd = is_1080p ? 60.0f : 50.0f;
+        float range_lat = 16.0f;
+        int radar_size = is_1080p ? 340 : 320;
 
-            cv::rectangle(bgr, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 2);
-            char label[96];
-            const char* name = (d.class_id >= 0 && d.class_id < 80) ? COCO80[d.class_id] : "?";
-            snprintf(label, sizeof(label), "%s %.0f%%", name, d.score * 100);
-            const int tw = 12 * (int)strlen(label);
-            const int ty = y1 > 24 ? y1 : y1 + 26;
-            cv::rectangle(bgr, cv::Point(x1, ty - 24), cv::Point(x1 + tw, ty),
-                          cv::Scalar(0, 255, 0), -1);
-            cv::putText(bgr, label, cv::Point(x1 + 5, ty - 7),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+        BEVProjector bev(bgr.cols, bgr.rows, hfov, mount_h, pitch);
+
+        std::vector<std::pair<std::string, Box3D>> bev_objects;
+        int obj_count = 0;
+
+        for (const auto& d : dets) {
+            // 重点交通目标与人体
+            bool is_traffic = is_traffic_class(d.class_id);
+            if (!is_traffic && d.score < 0.40f) continue;
+
+            float ox1 = (d.x1 - pad_x) / scale;
+            float oy1 = (d.y1 - pad_y) / scale;
+            float ox2 = (d.x2 - pad_x) / scale;
+            float oy2 = (d.y2 - pad_y) / scale;
+            ox1 = std::max(0.0f, std::min(ox1, (float)bgr.cols - 1));
+            ox2 = std::max(0.0f, std::min(ox2, (float)bgr.cols - 1));
+            oy1 = std::max(0.0f, std::min(oy1, (float)bgr.rows - 1));
+            oy2 = std::max(0.0f, std::min(oy2, (float)bgr.rows - 1));
+
+            const char* name = (d.class_id >= 0 && d.class_id < 80) ? COCO80[d.class_id] : "obj";
+            cv::Scalar col = PALETTE[obj_count % 6];
+            obj_count++;
+
+            Box3D box3d;
+            bool ground = bev.estimate_3d_box(ox1, oy1, ox2, oy2, name, box3d);
+            if (ground) {
+                draw_3d_box(bgr, box3d, col, 2);
+                bev_objects.push_back({name, box3d});
+            } else {
+                // 降级 2D 框
+                cv::rectangle(bgr, cv::Point((int)ox1, (int)oy1), cv::Point((int)ox2, (int)oy2), col, 2);
+                char label[96];
+                snprintf(label, sizeof(label), "%s %.0f%%", name, d.score * 100);
+                const int tw = 12 * (int)strlen(label);
+                const int ty = oy1 > 24 ? (int)oy1 : (int)oy1 + 26;
+                cv::rectangle(bgr, cv::Point((int)ox1, ty - 24), cv::Point((int)ox1 + tw, ty), col, -1);
+                cv::putText(bgr, label, cv::Point((int)ox1 + 5, ty - 7),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+            }
+        }
+
+        // 渲染 BEV 鸟瞰雷达小地图并贴到右上角
+        cv::Mat radar = render_bev_radar(radar_size, range_fwd, range_lat, bev_objects);
+        int margin = 16;
+        int rx = bgr.cols - radar.cols - margin;
+        int ry = margin;
+        if (rx >= 0 && ry + radar.rows <= bgr.rows) {
+            radar.copyTo(bgr(cv::Rect(rx, ry, radar.cols, radar.rows)));
+            cv::rectangle(bgr, cv::Rect(rx - 1, ry - 1, radar.cols + 2, radar.rows + 2), cv::Scalar(0, 200, 255), 1);
         }
 
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
         double fps = (double)frame_id / (elapsed + 1e-5);
 
-        char hud[192];
+        // 顶部遥测 HUD
+        char hud[256];
         snprintf(hud, sizeof(hud),
-                 "DFL-Free INT8 | NPU %.1f ms + Decode %.1f ms | %.1f FPS | %zu obj",
-                 npu_ms, dec_ms, fps, dets.size());
-        cv::rectangle(bgr, cv::Point(0, 0), cv::Point(bgr.cols, 40), cv::Scalar(15, 23, 42), -1);
-        cv::putText(bgr, hud, cv::Point(16, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+                 "EdgeVision RK3588 · 3D BEV | NPU %.1f ms + Dec %.1f ms | %.1f FPS | 3D Targets: %zu",
+                 npu_ms, dec_ms, fps, bev_objects.size());
+        cv::rectangle(bgr, cv::Point(0, 0), cv::Point(bgr.cols, 36), cv::Scalar(15, 23, 42), -1);
+        cv::putText(bgr, hud, cv::Point(16, 26), cv::FONT_HERSHEY_SIMPLEX, 0.65,
                     cv::Scalar(56, 189, 248), 2, cv::LINE_AA);
 
         auto tD = std::chrono::steady_clock::now();
