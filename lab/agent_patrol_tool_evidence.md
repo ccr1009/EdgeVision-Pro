@@ -84,14 +84,14 @@ BUILD_EXIT=0
 
 ## 5. PC 侧 12 条回归
 
-命令: `python edgevision-rk3588/lab/agent_regression_test.py --with-faults --timeout 240 --out-dir _test_results --bin /root/rkllm_deploy/rkllm_embodied_agent_p0_t6`
+命令: `python edgevision-rk3588/lab/agent_regression_test.py --with-faults --timeout 240 --out-dir _workbench/test_results --bin /root/rkllm_deploy/rkllm_embodied_agent_p0_t6`
 
-### 第一轮 (10/12, 结果 `_test_results/20261025_121945/`)
+### 第一轮 (10/12, 结果 `_workbench/test_results/20261025_121945/`)
 
 - PASS×10: T01 temp / T02 led_status / T03 alarm / T05 invalid_mode / T06-T10 / T12(故障注入: 停 edgevision→恢复 active, LED 自动写回 heartbeat)。
 - **FAIL T04_led_heartbeat**: 期望 `control_led(mode=heartbeat)`, 实际模型读事件后被 THERMAL_ALERT 带偏, 改控 off —— sys_prompt「不要在无依据时直接改变指示灯」条款太强, 显式指令也被事件干扰改判。
 - **FAIL T11_repl_double_control#1**: REPL「把灯调成常亮」时灯已是 on/255(前置用例遗留), 模型查完状态自作主张「无需调整」跳过 control_led; 第 2 轮 alarm 正常 —— 缺「显式指令幂等执行」条款。**非上下文串扰**。
-- 失败详情: `_test_results/_t04_t11_detail.txt`。
+- 失败详情: `_workbench/test_results/_t04_t11_detail.txt`。
 
 ### 根因修复 (sys_prompt, 本地 956 行版)
 
@@ -100,10 +100,10 @@ BUILD_EXIT=0
 
 ### 复验与最终全量 (最终二进制 md5 6ec791e3…, 板上 12:45:23 重建)
 
-- `--only T04_led_heartbeat,T11_repl_double_control` 复跑 (二进制 7c0f8f…): **2/2 PASS** (24.0s / 43.6s, `_test_results/20261025_123347/`)。
-- 第二轮全量 (二进制 7c0f8f…, `_test_results/20261025_123521/`): **11/12** —— 新增 FAIL T08_conditional_decision: 条件指令「画面里有人就报警」模型未调 get_vision_telemetry, 被 THERMAL_ALERT 带偏断言「守护已报警无需干预」。根因: 「有巡检事件优先读事件」条款权重过强, 历史事件替代了条件实测。
-- **T08 修复** (本地 961 行版, md5 6ec791e3…): sys_prompt 新增【最高优先级】条件实测条款 —— 条件引用哪个数据源就必须调对应工具实测, 巡检历史事件只用于研判过去、不能替代实时感知, 不能以「守护进程已处理」为由跳过条件未触发的动作。板上重编译 0 error 0 warning (95576B, 12:45:23), `--only T08` 复跑 **PASS** (80.7s, `_test_results/20261025_124539/`)。
-- **最终全量 12/12 PASS (100%)** (二进制 6ec791e3…, `_test_results/20261025_124718/`): T01 36.9s / T02 23.2s / T03 24.3s / T04 28.8s / T05 27.6s / T06 25.4s / T07 40.0s / T08 27.7s / T09 32.8s / T10 90.8s / T11 32.3s / T12(故障注入) 19.7s。回归后脚本自动写回 LED ✔。
+- `--only T04_led_heartbeat,T11_repl_double_control` 复跑 (二进制 7c0f8f…): **2/2 PASS** (24.0s / 43.6s, `_workbench/test_results/20261025_123347/`)。
+- 第二轮全量 (二进制 7c0f8f…, `_workbench/test_results/20261025_123521/`): **11/12** —— 新增 FAIL T08_conditional_decision: 条件指令「画面里有人就报警」模型未调 get_vision_telemetry, 被 THERMAL_ALERT 带偏断言「守护已报警无需干预」。根因: 「有巡检事件优先读事件」条款权重过强, 历史事件替代了条件实测。
+- **T08 修复** (本地 961 行版, md5 6ec791e3…): sys_prompt 新增【最高优先级】条件实测条款 —— 条件引用哪个数据源就必须调对应工具实测, 巡检历史事件只用于研判过去、不能替代实时感知, 不能以「守护进程已处理」为由跳过条件未触发的动作。板上重编译 0 error 0 warning (95576B, 12:45:23), `--only T08` 复跑 **PASS** (80.7s, `_workbench/test_results/20261025_124539/`)。
+- **最终全量 12/12 PASS (100%)** (二进制 6ec791e3…, `_workbench/test_results/20261025_124718/`): T01 36.9s / T02 23.2s / T03 24.3s / T04 28.8s / T05 27.6s / T06 25.4s / T07 40.0s / T08 27.7s / T09 32.8s / T10 90.8s / T11 32.3s / T12(故障注入) 19.7s。回归后脚本自动写回 LED ✔。
 - 收尾核验: 板上 trigger `[heartbeat]` / brightness 255 (曾发现 patrol 链路残留爆闪子进程 pid 20495 持续把 trigger 拉回 none, kill 后恢复)。
 
 > 坑: 复测脚本若用 PowerShell `-Encoding ASCII` 写中文查询, 板端收到 `???????` 乱码导致用例无效 (T04_EXIT=0 但行为无效, 需作废重测) —— 含中文的板端指令一律走回归脚本的 base64 通道或 `--only`。

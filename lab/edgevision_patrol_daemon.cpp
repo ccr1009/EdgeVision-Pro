@@ -69,7 +69,7 @@ static const char* EVENT_LOG     = "/root/patrol/patrol_events.log";
 static const char* LLM_LOG       = "/root/patrol/llm_pending.jsonl";
 static const char* PATROL_LOCK_FILE = "/tmp/edgevision_patrol.lock";
 
-// ---------------- 迟滞参数表(详见 docs/PATROL_DAEMON_DESIGN.md) --------------
+// ---------------- 迟滞参数表(详见 docs/tech_notes/PATROL_DAEMON_DESIGN.md) --------------
 static const long MAX_LOG_BYTES    = 5LL * 1024 * 1024; // 黑匣子 >5MB 轮转, 保留一代 .1
 static const int    TEMP_EXIT_N     = 3;                 // 连续 N 周期低于恢复阈值才恢复
 static const int    PERSON_ENTER_N  = 2;                 // 连续 N 周期检出 -> PERSON_ALERT

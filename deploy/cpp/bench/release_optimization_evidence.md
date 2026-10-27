@@ -68,7 +68,7 @@ CXX_FLAGS               = -O3 -DNDEBUG -mcpu=cortex-a76.cortex-a55 -std=gnu++17
 CXX_DEFINES             = -DENABLE_RKNN -DHAVE_MPP_JPEG_ENCODER -DHAVE_OPENCV
 ```
 
-Lead 独立复核（全新目录、不传任何 `-DCMAKE_BUILD_TYPE`，脚本 `_test_results/lead_verify_integration.sh`）：
+Lead 独立复核（全新目录、不传任何 `-DCMAKE_BUILD_TYPE`，脚本 `_workbench/test_results/lead_verify_integration.sh`）：
 
 ```
 /root/lead_build_check/

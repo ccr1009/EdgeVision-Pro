@@ -57,7 +57,8 @@ agent_regression_test.py —— RK3588 端侧具身 Agent 回归测试器 (PC �
     {"type":"any_of","assertions":[ ... ]}  # 元素可为单断言或断言列表(AND组)
   with_faults: True 的用例仅在 --with-faults 下执行 (会 stop/start edgevision)。
 
-结果输出: lab/agent_test_results/<时间戳>/results.json + summary.md。
+结果输出: <工作区>/_workbench/test_results/<时间戳>/results.json + summary.md
+          (仓库外, 不会被误提交; 可用 --out-dir 覆盖)。
 不带 --with-faults 时绝不启停任何 systemd 服务。
 """
 
@@ -701,7 +702,7 @@ def write_results(out_dir, meta, case_results):
     lines.append("- 故障注入: %s" % ("是" if meta["with_faults"] else "否"))
     lines.append("- 用例: %d 条, 通过 %d, 跳过 %d, **通过率 %.1f%%**" %
                  (total, passed, skipped, rate))
-    lines.append("- 端到端成功率(断言全过占比)口径见 docs/AGENT_TEST_PLAN.md")
+    lines.append("- 端到端成功率(断言全过占比)口径见 docs/tech_notes/AGENT_TEST_PLAN.md")
     lines.append("")
     lines.append("| ID | 用例 | 模式 | 结果 | 耗时(s) | 失败断言 |")
     lines.append("|---|---|---|---|---:|---|")
@@ -744,7 +745,7 @@ def main():
                     help="单条用例 PC 侧超时秒数(默认240)")
     ap.add_argument("--list", action="store_true", help="仅列出用例不执行")
     ap.add_argument("--out-dir", default=None,
-                    help="结果输出根目录(默认 <脚本目录>/agent_test_results)")
+                    help="结果输出根目录(默认 <工作区>/_workbench/test_results)")
     ap.add_argument("--only", default=None,
                     help="只跑指定用例,逗号分隔(T03,T04 或 T03_led_alarm)")
     args = ap.parse_args()
@@ -779,8 +780,10 @@ def main():
     print("[预检] SSH OK, 板端二进制可见。\n")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 默认落在工作区根 <root>/_workbench/test_results/(仓库外, 不会被误提交)
     results_root = args.out_dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "agent_test_results")
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "_workbench", "test_results")
     out_dir = os.path.join(results_root, timestamp)
     meta = {"timestamp": timestamp, "host": args.host, "bin": args.bin,
             "with_faults": bool(args.with_faults), "transport":

@@ -23,7 +23,7 @@ RK3588 端侧具身 Agent —— 多步演示闭环编排器 (纯标准库)
 
 两幕合起来才是完整的「快慢双系统」: 快层保证毫秒级反应且不占 NPU, 慢层负责需要理解
 和解释的研判。这比「让 LLM 每 5 秒跑一次」在时延、NPU 占用、可靠性上都更合理
-(理由见 docs/PATROL_DAEMON_DESIGN.md 第 5 节)。
+(理由见 docs/tech_notes/PATROL_DAEMON_DESIGN.md 第 5 节)。
 
 判定原则 (与项目总纲一致: 不许用假数据冒充结果)
 --------------------------------------------
@@ -736,7 +736,7 @@ def main():
     ap.add_argument("--agent-timeout", type=int, default=300,
                     help="第二幕 Agent 单轮超时秒数(默认300)")
     ap.add_argument("--out-dir", default=None,
-                    help="结果根目录(默认 <工作区>/_test_results)")
+                    help="结果根目录(默认 <工作区>/_workbench/test_results)")
     args = ap.parse_args()
 
     if not args.host:
@@ -756,9 +756,10 @@ def main():
     print("[预检] SSH OK: %s\n" % (out or "").replace("ok", "").strip())
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 默认落在工作区根 <root>/_workbench/test_results/(仓库外, 不会被误提交)
     root = args.out_dir or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))), "_test_results")
+            os.path.abspath(__file__)))), "_workbench", "test_results")
     out_dir = os.path.join(root, "demo_%s" % ts)
 
     meta = {"timestamp": ts, "host": args.host, "daemon_flags": []}

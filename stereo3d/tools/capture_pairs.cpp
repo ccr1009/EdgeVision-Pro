@@ -153,7 +153,7 @@ static bool parseArgs(int argc, char** argv, Options& o) {
 
 // ---------------------------------------------------------------------------
 // 打开一路 V4L2 摄像头
-//   坑（项目里踩过，见 docs/CAMERA_FPS_ROOT_CAUSE.md）：
+//   坑（项目里踩过，见 docs/tech_notes/CAMERA_FPS_ROOT_CAUSE.md）：
 //   V4L2 后端如果不显式 set(CAP_PROP_FPS)，会默认协商成 20fps，而不是 30fps。
 //   BUFFERSIZE=1 让驱动只保留 1 个缓冲，grab() 拿到的永远是「最新」那一帧，
 //   否则队列里会积压旧帧，抓出来的图比真实时间晚好几帧（标定时表现为画面和姿势对不上）。
