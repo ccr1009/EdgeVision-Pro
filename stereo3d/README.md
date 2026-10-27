@@ -1,14 +1,17 @@
-# stereo3d-rk3588 —— 双目 3D 感知 / 人脸 3D 定位
+# stereo3d —— 双目 3D 感知 / 人脸 3D 定位
 
 > RK3588 端侧**双目立体视觉**项目：双 USB 摄像头 → 立体矫正 → SGBM 稠密视差 → 深度图 → 人脸框内深度 → 人脸 3D 坐标。
 > 原生 C++（无第三方库，只用 OpenCV），板端原生编译，浏览器 MJPEG 实时预览。
+>
+> **本目录是唯一代码源。** 早期在根目录另存过一份 `stereo3d-rk3588/` 开发现场快照，
+> 已降级为素材归档（`<工作区>/_workbench/stereo3d-rk3588-archive/`），不再参与开发。
 
 ## 为什么做这个（校招叙事）
 
 已有项目 `edgevision-rk3588` 是**单目 + NPU 目标检测**，只能给 2D 框。
 本项目补上**深度/三维**这一环，形成完整链条：
 
-| 能力 | edgevision-rk3588（单目） | stereo3d-rk3588（双目，本项目） |
+| 能力 | edgevision-rk3588（单目） | stereo3d（双目，本项目） |
 |---|---|---|
 | 目标位置 | 2D 框 (u,v,w,h) | **3D 坐标 (X,Y,Z) 米** |
 | 测距原理 | 无（或框大小估算，不可靠） | **三角测量**：`Z = fx·B / d` |
@@ -33,7 +36,7 @@
 ## 目录结构
 
 ```
-stereo3d-rk3588/
+stereo3d/
 ├── CMakeLists.txt
 ├── include/
 │   ├── stereo_types.h      # 全项目共享数据结构（契约）
@@ -42,6 +45,7 @@ stereo3d-rk3588/
 │   ├── http_server.h       # MJPEG 网页预览
 │   └── app_options.h
 ├── src/                    # 对应实现
+├── evidence/               # 合成标定真值 + 自检日志（21 项真值自测的依据）
 ├── tools/
 │   ├── probe_dual_cam.cpp        # 可行性探针（先量数据再动手）
 │   ├── gen_synthetic_stereo.cpp  # 合成双目 + 已知真值自检

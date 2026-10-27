@@ -1,4 +1,4 @@
-# BENCHMARKS — stereo3d-rk3588 板端实测
+# BENCHMARKS — stereo3d 板端实测
 
 > 全部数字来自 EVM3588-B 真机实测（Debian 11 / OpenCV 4.5.1 / g++ 10.2.1）。
 > **测量口径**：真实双摄 `/dev/video81` + `/dev/video83`，1280×720 MJPG 采集，处理尺度 640×360，

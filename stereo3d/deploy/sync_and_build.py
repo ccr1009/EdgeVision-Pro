@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sync_and_build.py —— 把本机 stereo3d-rk3588 同步到板上并编译（Windows 版）
+sync_and_build.py —— 把本机 stereo3d 同步到板上并编译（Windows 版）
 
 用法（在 PC 的 PowerShell 里）：
     python deploy/sync_and_build.py

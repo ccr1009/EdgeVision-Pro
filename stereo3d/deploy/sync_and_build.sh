@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  sync_and_build.sh —— 把本机 stereo3d-rk3588 同步到板上并编译
+#  sync_and_build.sh —— 把本机 stereo3d 同步到板上并编译
 #  在 PC 的 PowerShell 里跑：
 #     bash -lc "./deploy/sync_and_build.sh"        # 需 git-bash / WSL
 #  或者直接：
