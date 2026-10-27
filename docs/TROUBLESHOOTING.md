@@ -1013,6 +1013,135 @@ AST 里看不出任何异常，必须**真跑一遍调用链**才能暴露。
 
 ---
 
+### 27. `rkllm_init failed`（errno 14 / Bad address）：不是驱动老、不是 CMA 不够，是 NPU IOMMU 的 4 GiB 地址空间被其它跑 NPU 的进程吃满
+
+**现象**：`./rkllm_embodied_agent`（Qwen3.5-2B W8A8，2.98 GB `.rkllm`）两天前还能正常加载推理，
+突然加载失败，三行错误固定不变：
+
+```
+W rkllm: Warning: Your rknpu driver version is too low, please upgrade to 0.9.7
+E RKNN: failed to allocate handle, ret: -1, errno: 14, errstr: Bad address
+E RKNN: failed to malloc npu memory, size: 205799424, flags: 0x2
+E rkllm: load model file error!
+rkllm_init failed: -1
+```
+
+迷惑点：**同一个二进制、同一个模型文件、同一块板**，昨天不报错今天报错；
+且报错的 `size: 205799424`（196.3 MiB）远小于可用内存（MemAvailable ≈ 6.9 GB），
+Swap 为 0，所以第一反应必然是「内存不够吗？驱动太旧吗？」——**两个都是错的**。
+
+**排查（四个假设逐一证伪，最后用算术钉死）**：
+
+1. **假设 A：驱动 0.9.2 太旧（警告都提示升 0.9.7 了）** → **否**。
+   dmesg 里 `used:` 值全部落在 **3873~4085 MiB**，而 `size` 只有 196.3 MiB；
+   0.9.x 上跑通 2.98 GB 模型的案例大量存在，警告是**软警告不阻塞**
+   （同款 issue #232 里 1.1.4+0.9.6 打同样警告仍 `init success`）。
+   降级路线也不通：**Qwen3.5 支持是 rkllm v1.3.0 才加的**，旧 runtime 直接不认这个模型。
+
+2. **假设 B：CMA 不足（CmaTotal 只 256 MB 且 CmaFree=0）** → **否**。
+   决定性反证：A/B 里 **`CmaFree` 全程都是 0 kB 却仍能加载成功**；
+   `/sys/kernel/debug/dma_buf/bufinfo` 只有 1 个 buffer（rockchipdrm/Xorg），
+   说明 CMA 没被 dma-buf 占。且 `flags: 0x2` 按 `rknpu-ioctl.h` 枚举 =
+   **CACHEABLE**（runtime 还会 OR 上 `IOMMU|ZEROING`）→ 走的是
+   **dma-buf/系统内存 + IOMMU 映射，根本不占 CMA**。
+
+3. **假设 C：某个常驻进程泄漏 NPU 内存** → **部分否，但方向对了**。
+   板上当时有两个常驻 NPU 程序：`edgevision_dashboard --port 8090`、
+   systemd 的 `w4_edgevision_gateway /dev/video81`。
+   但**单独跑 dashboard 180 秒内反复加载全部成功**（RSS 稳定 171 MB，
+   `fd` 里 `renderD129` 计数恒为 0）；**单独跑 gateway 8s/68s 也都成功**（RSS 131 MB）。
+   → 不是「某个进程单独泄漏」，而是**加起来越界**。
+
+4. **决定性实验：按配置数「最多能开几个 rkllm」**（`_tools/quantify_iommu_by_config.sh`）：
+
+   | 配置 | 结果 | 失败那次的请求 size | 失败时驱动报的 `used` |
+   |---|---|---|---|
+   | 完全干净（无 gateway/无 dashboard） | **2 个 OK，第 3 个 FAIL** | 41 608 320 B（39.7 MiB） | **4075 MiB** |
+   | 只开 gateway（systemd） | **1 个 OK，第 2 个 FAIL** | **205 799 424 B（196.3 MiB）** | — |
+   | gateway + dashboard（= 用户当时的真实配置） | **1 个 OK，第 2 个 FAIL** | **205 799 424 B（196.3 MiB）** | — |
+
+   **逐字复现了用户原始日志里的 `size: 205799424, flags: 0x2, errno: 14`**。
+
+**根因**：**RK3588 NPU 的 IOMMU 只有 32 位（4 GiB = 4096 MiB）地址空间**，
+`rknpu` 给每次 `rknn_create_mem` 在 IOVA 里要一段**连续**空间，
+段不够 `dma_map_sg` 就返回 `EFAULT`（errno 14 = Bad address），
+runtime 把这个 EFAULT 一路翻译成「failed to allocate handle」。
+算术一眼看穿：**`used: 3915 MiB` + `196.3 MiB` = 4111 MiB > 4096 MiB**。
+
+而一个 Qwen3.5-2B rkllm 实例常驻后 RSS ≈ **2.17 GB**，每个实例约占 **~1.95 GB IOVA**：
+- 干净板：2 × 1.95 ≈ 3.9 GiB → **只能开 2 个，第 3 个必然失败**；
+- 再叠加 gateway/dashboard 后 → **只能开 1 个**。
+
+用户那条命令其实是「当前配置下的第 2 个 NPU 重负载程序」，所以报错。
+**这解释了「昨天好好的今天坏了」——代码没变，机器上跑的东西变了。**
+
+关键辨识点（一眼定性，不用猜）：
+- errno **14 (EFAULT)** 是**地址映射失败**，不是 **12 (OOM)**、也不是 **23/24 (fd 耗尽)**；
+- `dmesg` 里 `rknpu_gem_get_pages: dma map <bytes> fail` + 紧跟的 `used: N MiB`，
+  **`used + 请求 size > 4096 MiB` 就是铁证**，且驱动每次失败前会 dump 全部 IOVA 区域列表。
+
+**解法**：
+
+1. **先体检**（`_tools/npu_doctor.sh`，板上 `/root/npu_doctor.sh`，10 秒出结论）：
+   ① 驱动/频率/负载/内存 ② 谁在占 NPU ③ 残留 rkllm 实例 ④ systemd 自启 ⑤ 历史失败次数
+   ⑥ 结论与处理顺序。
+
+2. **立刻能用**（让出 NPU 地址空间，**不用重启板子**）：
+   ```bash
+   pkill -f rkllm_embodied_agent        # 清残留实例（每个 ~2 GB）
+   systemctl stop edgevision.service    # 停网关
+   pkill -f edgevision_dashboard        # 停看板
+   cd /root/rkllm_deploy && ./rkllm_embodied_agent
+   ```
+   用完恢复：`systemctl start edgevision.service`。
+
+3. **约束**（记住上限就不会再踩）：
+   - **一块 RK3588 上，NPU 重负载程序总量 ≲ 4 GiB IOVA**；
+   - `rkllm` 大模型实例：**干净板最多 2 个**，叠加 gateway/dashboard 后**最多 1 个**；
+   - 想长期并存 → 用 systemd `Conflicts=`/`After=` 做**互斥**，别靠人记得关。
+
+4. **收不了就冷重启**：`reboot`。IOMMU 地址空间在重启后彻底复位
+   （`kill -9` 实测也能正常释放，不必重启；重启是最后手段）。
+
+**证据**：
+- 板上 `_tools/quantify_iommu_by_config.sh` 三配置实测（见上表），
+  逐字复现 `205799424 / flags: 0x2 / errno: 14`；
+- dmesg 全部 11 次失败记录的 `used` 值与时间戳，`used + size` 恒 > 4096 MiB；
+- 每个 rkllm 实例 RSS 2273756~2274104 kB；
+- `rknpu-ioctl.h` 枚举解出 `flags: 0x2 = CACHEABLE`，故**不占 CMA**（推翻假设 B 的理论依据）；
+- 同款社区复现 [issue #335](https://github.com/airockchip/rknn-llm/issues/335)
+  （qwen2.5-vl-3b + errno 14 + 3085697024 字节），提问者最终结论也是「重启开发板就行了」——
+  他碰到的是同一个上限，只是没查出来是哪一层。
+
+**方法论收获（比结论更值钱）**：
+- **「昨天好好的今天坏了」≠ 代码回归**。先问「机器上还有什么在跑」，
+  而不是先 `git diff` / 先怀疑驱动版本。**同一份二进制换环境结果不同 = 资源竞争，不是代码 bug。**
+- **`size` 远小于可用内存却能 OOM，说明限制不在你以为的那一层**。
+  `size: 196 MB` + `MemAvailable: 6.9 GB` 并存 → 立刻排除「内存不够」，
+  转去查「是不是有别的**地址空间**（不是物理内存）不够」。
+- **让驱动自己报数**：`used + size > 上限` 这种判定，比自己加日志猜准确得多。
+  内核在失败点附近打印的上下文（`used:` / 区域列表）就是免费的可观测量。
+- **别被 warning 带偏**：`driver version is too low` 是**软警告**，
+  它和真正的失败点（`dma map fail`）在日志里相邻出现，极易被误判成因果。
+
+**面试讲法**：
+> 「端侧大模型突然加载失败，报 `errno 14 Bad address`，同时驱动提示『版本太旧请升 0.9.7』,
+> 几乎所有人第一反应都是去升驱动。但算一下就不对：失败请求只有 196 MB，
+> 机器可用内存 6.9 GB——真 OOM 应该是 errno 12，不是 14。
+> 我去读 dmesg，发现驱动每次失败前都会打印 `used: 3915 MiB` 和完整的 IOVA 区域列表，
+> 3915 + 196 = 4111 > 4096。RK3588 的 NPU 走 IOMMU，**IOMMU 地址空间是 32 位的**,
+> 只有 4 GiB，跟物理内存是两回事。每个 2B 模型实例常驻要吃掉约 2 GB IOVA，
+> 干净板最多开 2 个，再叠加视觉网关就只能开 1 个。
+> 我做了个三配置对照实验：干净 / 只开网关 / 网关+看板，分别测『最多能起几个 rkllm』,
+> 干净是 2 个、另两个都只有 1 个，而且**逐字复现了用户原始日志里的那个 205799424 字节**。
+> 所以根因是地址空间耗尽，不是驱动版本——升驱动要重编内核刷 boot.img，
+> 做了也解决不了这个问题。解法就是跑之前先让出 NPU，或者用 systemd 做互斥。
+> 这件事让我记住两点：一是**『昨天好好的今天坏了』要先看环境变了什么，不是先怀疑代码**；
+> 二是**日志里相邻出现的 warning 和 error 不一定有因果关系**,
+> 差 6 倍的性能问题和这次的驱动警告，都是被相邻位置带偏的陷阱。」
+
+---
+
 | 类别 | 一句话 |
 | :--- | :--- |
 | 算法 | DFL 距离是格子单位，**必须乘 stride** |
@@ -1044,6 +1173,12 @@ AST 里看不出任何异常，必须**真跑一遍调用链**才能暴露。
 | 端侧Agent | RKLLM `role="tool"` 强制要求 JSON 数组 `[{...}]`，单个 JSON 对象会被 runtime 直接拒绝 |
 | 端侧Agent | sysfs 写入必须逐步查返回值+回读比对，否则「底层 EINVAL + 上层不验」出假成功；内核裁剪过的触发器（如 timer）写了就 EINVAL |
 | 端侧Agent | 只 fork 不 exec 的子进程会继承 NPU 内存映射，孤儿进程能把 196MB NPU CMA 钉死（malloc npu memory errno 14） |
+| NPU | **RK3588 NPU IOMMU 只有 32 位 / 4 GiB 地址空间**（与物理内存无关）：2B 大模型每实例约吃 ~1.95 GB IOVA，干净板最多 2 个，叠加视觉网关后只能 1 个；第 N+1 个报 `errno 14 Bad address` |
+| NPU | `rkllm_init failed` + `errno 14` 先看 dmesg 的 `used: N MiB`，**`used + 请求 size > 4096 MiB` 就是 IOMMU 耗尽铁证**，别先去升驱动 |
+| NPU | errno 分诊：**14 = EFAULT 地址映射失败**、12 = 真 OOM、23/24 = fd 耗尽；`size` 远小于 MemAvailable 却失败 → 限制不在物理内存那一层 |
+| NPU | `flags: 0x2` 按 `rknpu-ioctl.h` = **CACHEABLE**（runtime 另 OR 上 IOMMU\|ZEROING）→ 走 dma-buf+IOMMU，**不占 CMA**；所以「CmaFree=0」与 rkllm 能否加载无关 |
+| 排错 | **「昨天好好的今天坏了」≠ 代码回归**：同一份二进制换环境结果不同 = 资源竞争；先查「机器上还有什么在跑」，别先 git diff / 先怀疑版本 |
+| 排错 | 日志里**相邻出现的 warning 和 error 不一定有因果关系**（`driver version too low` 是软警告，真凶在下一行 `dma map fail`） |
 | 端侧Agent | 长寿子进程 exec 前必须把 0/1/2 重定向到 /dev/null，否则持有父进程 stdout 管道写端 → 读端等不到 EOF，表现为「命令卡死」 |
 | 端侧Agent | 模型把参数包在换行里（`\nalarm\n`），提取后必须 trim；否则打印成空值、白名单还会误判非法 |
 | 端侧Agent | **周期性物理量（爆闪灯的 brightness）绝不能单点采样定性**：灭相与「关闭」编码相同，撞上就误判。要判「爆闪进程是否存活」，或多点采样看有无翻转 |

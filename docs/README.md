@@ -92,12 +92,16 @@ edgevision-rk3588/
 │   ├── run_benchmark.sh        # 一键运行精度与吞吐基准测试
 │   └── run_all_tests.sh        # 一键运行全系统自测套件
 └── docs/                       # 项目文档体系
-    ├── README.md               # 项目架构与快速上手指南
     ├── CURRENT_STATUS.md       # 现在能干什么 + 下一步(接手先看这份)
     ├── BENCHMARKS.md           # 性能与延迟基准数据表(含测量口径与局限)
-    ├── TROUBLESHOOTING.md      # 踩过的坑:现象 → 排查 → 根因 → 解法
-    ├── STUDY_GUIDE.md          # 概念映射到代码位置的学习手册
-    └── HANDOVER.md             # RK3588 板子到货后的保姆级交接清单
+    ├── TROUBLESHOOTING.md      # 踩过的坑:现象 → 排查 → 根因 → 解法(面试素材库)
+    ├── LEARNING_PLAN_4WEEKS.md # 4周嵌入式 Linux 应用层实战学习路线
+    ├── README.md               # 项目架构与快速上手指南
+    ├── interview/              # 面试技术准备、每周核心考点与高频八股速查
+    ├── tech_notes/             # 专项技术方案与深度排错分析报告
+    ├── resumes/                # 正式简历成果 (v12 docx/pdf) 与历史版本归档
+    ├── images/                 # 架构图与演示截图
+    └── archive/                # 历史演进草稿与旧规划归档
 ```
 
 ---

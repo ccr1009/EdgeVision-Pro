@@ -5,7 +5,43 @@
 ## 一句话
 RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
-> 最后一次更新:**2026-10-26 · 车载道路实景实时看板 8090 通关**(mp4 循环 → 7~8 辆真实车辆 3D 线框 + 右上角 BEV 雷达 → 浏览器 MJPEG,实测 24~27 fps、6/6 端到端验收全绿)
+> 最后一次更新:**2026-10-26 · 定位并解决 `rkllm_init failed`(NPU IOMMU 4 GiB 地址空间耗尽)** —— 见下方「关键运行约束」
+
+## ⚠️ 关键运行约束:NPU IOMMU 只有 4 GiB(和物理内存是两回事)
+
+RK3588 的 NPU 走 IOMMU,`rknpu` 给每次 `rknn_create_mem` 在 **32 位 IOVA 空间(4 GiB = 4096 MiB)** 里要一段连续地址。这个上限**与 MemTotal 7.5 GB 无关**,是硬约束。
+
+**实测容量(2026-10-26,`_tools/quantify_iommu_by_config.sh`)**:
+
+| 配置 | 最多能起几个 rkllm(Qwen3.5-2B,W8A8 2.98GB) |
+|---|---|
+| 完全干净 | **2 个**,第 3 个失败 |
+| 只开 gateway(systemd `edgevision.service`) | **1 个**,第 2 个失败 |
+| gateway + dashboard(8090) | **1 个**,第 2 个失败 |
+
+一个 rkllm 实例常驻 RSS ≈ 2.17 GB、约占 **~1.95 GB IOVA**;2 × 1.95 ≈ 3.9 GiB 已逼近上限。
+
+**超限报错长这样(完整四行)**——注意 `size` 只有 196 MB,远小于可用内存:
+```
+W rkllm: Warning: Your rknpu driver version is too low, please upgrade to 0.9.7   ← 软警告,与失败无因果
+E RKNN: failed to allocate handle, ret: -1, errno: 14, errstr: Bad address
+E RKNN: failed to malloc npu memory, size: 205799424, flags: 0x2
+E rkllm: rkllm_init failed
+```
+
+**判据(一眼定性,别去升驱动)**:`dmesg | grep 'dma map'` 看 `used: N MiB`,`used + 请求 size > 4096` 即地址空间耗尽。errno 分诊:**14 = EFAULT 地址映射失败**、12 = 真 OOM、23/24 = fd 耗尽。
+
+**正确跑法**——用包装脚本(自动让出 NPU,退出后自动恢复网关):
+```bash
+bash /root/run_agent.sh                    # 交互式
+bash /root/run_agent.sh "查一下开发板温度"   # 单条指令
+bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
+```
+脚本做的事:① 清残留 rkllm 实例 ② `systemctl stop edgevision.service` ③ 停 dashboard ④ 启动 Agent ⑤ 退出时 `trap` 自动 `systemctl start edgevision.service` 恢复现场。
+
+**出问题时体检**:`bash /root/npu_doctor.sh`(六节:基础状态 / 谁在占 NPU / 残留 rkllm 实例 / systemd 自启 / 历史失败记录 / 结论与处理顺序)。
+
+**最后手段**:`reboot`(冷重启后 IOMMU 地址空间彻底复位;`kill -9` 实测也能正常释放,不必重启)。
 
 ## 现在能干什么
 - SSH 板子:`ssh root@<board-ip>`(**已配免密**;别名 `ssh rk3588`;有线。IP 与密码见本地私密记录,不入库)
@@ -84,7 +120,7 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
 ## 接下来要推进的重点任务
 
-0. ✅ **摄像头 20fps 之谜已破（2026-10-24）** —— 见 `docs/CAMERA_FPS_ROOT_CAUSE.md`
+0. ✅ **摄像头 20fps 之谜已破（2026-10-24）** —— 见 `docs/tech_notes/CAMERA_FPS_ROOT_CAUSE.md`
    - **真因：代码从没设 `cap.set(CAP_PROP_FPS, 30)`**，V4L2 默认协商到 20fps
    - 改一行后两台摄像头实测 **33.33 ms/帧 = 30.0 fps，400 帧零抖动**（p95 33.50ms）
    - ⚠️ 这**推翻了 BENCHMARKS 2.5.8** 的「物理上限 20fps」结论（已在 2.5.9 标注修正）
@@ -141,10 +177,10 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
 ### ✅ 回归测试体系 —— 交付并全部通过
 - **板上实测 12/12 通过(100%)**，2026-10-24 22:17，含故障注入用例（`--with-faults`：临时停 edgevision 验视觉离线，finally 自动恢复 active ✔）
-- 单用例耗时 13.7~66.0s（LLM 端侧推理为主），全套 ~6.5 min；结果落 `_test_results/20261024_221738/{results.json,summary.md}`
+- 单用例耗时 13.7~66.0s（LLM 端侧推理为主），全套 ~6.5 min；结果落 `_workbench/test_results/20261024_221738/{results.json,summary.md}`
 - `lab/agent_regression_test.py`(876 行纯标准库)：12 用例 T01~T12，支持 `--only T03,T04` 只重跑、`--out-dir` 指定结果目录；契约解析锚中文标记
 - `lab/bench_contention_sampler.py`：每秒采温区/NPU 三核/内存 → CSV（600 样本实测：zone0 中位 33.31°C，NPU 均值中位 14% / p90 63.5%，内存 4.41~6.65GB）
-- `docs/AGENT_TEST_PLAN.md`：用例表 + 指标口径 + NPU 竞争实测流程 + 故障注入安全协议
+- `docs/tech_notes/AGENT_TEST_PLAN.md`：用例表 + 指标口径 + NPU 竞争实测流程 + 故障注入安全协议
 - **回归过程中修掉 2 个真 bug + 1 个用例缺陷**（详见 TROUBLESHOOTING 第 22 条）：
   1. 爆闪子进程继承 stdout 管道 → 命令卡死 270s（修：exec 前 0/1/2 重定向 /dev/null；270s→21s）
   2. 模型参数值带换行 `\nalarm\n` → 打印成空值、白名单误判（修：提取后 trim）
@@ -158,7 +194,7 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 - **阈值可命令行配置**:`--temp-enter/--temp-exit/--person-score` 等,默认仍是 75/70°C(不为演示写死)
 - 单实例 flock 锁,防止两个守护同时抢灯
 - **真实闪灯验收通过**(占空比判据):阈值压到 20°C 触发 THERMAL_ALERT,实测 LED 占空比 **49.7% vs heartbeat 基线 20.0%(+29.7pp)**,6s 内翻转 73 次;事件真实落盘
-- 设计文档:`docs/PATROL_DAEMON_DESIGN.md`;验收证据:`lab/patrol_led_evidence.md`
+- 设计文档:`docs/tech_notes/PATROL_DAEMON_DESIGN.md`;验收证据:`lab/patrol_led_evidence.md`
 
 ### ✅ 多步演示闭环(两幕) —— 交付并全部 PASS
 - `lab/agent_multistep_demo.py`(纯标准库):第一幕守护真实告警闪灯 + 第二幕 Agent 一条自然语言多步研判汇报
@@ -166,7 +202,7 @@ RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 - 第二幕 PASS:端到端 **106.5s**(三次独立测量 106.5 / 112.2 / 123.9s,差异来自每轮生成 token 数不同),工具链 **4~5 个不同工具**(`get_system_health → get_patrol_events → get_led_status → control_led`,部分轮次还调了 `get_vision_telemetry`),Observation **20~29 条**全合法 JSON,未触步数上限,输出 **1315~1350 字**中文研判
   - ⚠️ 口径说明:这里是三次演示的区间值,不是单次精确值;早期本行曾写死「4 个工具 / 20 条 / 1335 字」= 仅第一次演示那次的数据
 - **演示虽判 PASS,但翻 trace 发现两个真缺陷并已修复**(详见下方「演示暴露的缺陷」)
-- 文档:`docs/AGENT_MULTISTEP_DEMO.md`(含局限与面试讲法)
+- 文档:`docs/tech_notes/AGENT_MULTISTEP_DEMO.md`(含局限与面试讲法)
 
 ### ✅ 演示暴露的两个缺陷(2026-10-25 修复)
 1. **把正在爆闪的报警灯读成「熄灭」→ 模型编造错误因果**(TROUBLESHOOTING 第 23 条)
@@ -283,16 +319,16 @@ RTSP / 摄像头输入(当前只吃视频文件)/ 30fps(实际 24~27,是原速�
 ### 新增
 | 文件 | 内容 | 干什么用 |
 |---|---|---|
-| `docs/INTERVIEW_PREP_PLAN.md` | 7 天排期 / **两分钟项目自述逐字稿(约 110 秒)** / 五条杀手故事(各 90 秒) / 红线表(9 条绝对不能说) / 被问倒怎么办 / 反问 / 投递前清单 | **这是总入口,先看这份** |
+| `docs/interview/INTERVIEW_PREP_PLAN.md` | 7 天排期 / **两分钟项目自述逐字稿(约 110 秒)** / 五条杀手故事(各 90 秒) / 红线表(9 条绝对不能说) / 被问倒怎么办 / 反问 / 投递前清单 | **这是总入口,先看这份** |
 | `docs/陈创荣_端侧AI部署_研一实习简历_v12.docx` / `.pdf` | **端侧AI部署版 v12（严格 1 页 A4）**：聚焦 DFL-Free 实测（纯推理 15.95ms/全链路 20.58ms/48.6 FPS）、INT8 COCO128 mAP 0.6002（-1.4%）、MPP 硬解 1.03ms（7.6×）、Qwen3.5-2B 单板 Tool Calling 闭环 | **端侧算法/部署岗主力简历** |
 | `docs/陈创荣_Linux应用开发_研一实习简历_v12.docx` / `.pdf` | **Linux应用开发版 v12（严格 1 页 A4）**：技能重排突出 C++/并发/Socket网络/系统服务/外设驱动/构建优化；项目语言转换为系统工程（有界队列0丢帧、定长帧二进制推流、背压丢旧防积压、Cache优化、CMake -O3 重构、驱动版本倒挂排错）；AI 作为异构计算壁垒加分项 | **嵌入式 Linux / C++ 软件岗主力简历** |
-| `docs/interview-recap/W5-端侧推理部署.md` | RKNN 量化、DFL 图手术、三核调度、逐层剖析、**测量方法论**、编译优化、MPP 一正一负、边界 | 端侧 AI 部署岗第一主力 |
-| `docs/interview-recap/W6-端侧Agent.md` | RKLLM 部署、Tool Calling、5 个硬件工具、快慢双系统、**三个真缺陷复盘**、回归体系、边界 | 差异化卖点 |
+| `docs/interview/W5-端侧推理部署.md` | RKNN 量化、DFL 图手术、三核调度、逐层剖析、**测量方法论**、编译优化、MPP 一正一负、边界 | 端侧 AI 部署岗第一主力 |
+| `docs/interview/W6-端侧Agent.md` | RKLLM 部署、Tool Calling、5 个硬件工具、快慢双系统、**三个真缺陷复盘**、回归体系、边界 | 差异化卖点 |
 
 ### 修正了 3 处会主动自贬的过期内容
 1. `interview-recap/README.md` 的「诚实边界」表 4 条全是 8 天前状态(说没 NMS / 没接 MPP / 只测推理边界)——**这些早就做完了**,照旧背等于白让功劳。已重写成 **11 行真实状态表**(✅ 已实现 4 项 / ❌ 未实现 7 项),必背数字从 13 行扩到 **A~E 五组 22 行**。
 2. **完全没有 W5/W6** —— 恰好是 JD 明写「RK3588 + RKNN/RKLLM 优先」的核心两块。已补齐。
-3. `docs/RESUME_校招_端侧AI部署.md` 里还写着 RKNN Runtime **1.5.2**、DFL 头「**正在实施**」、「NPU 推理**尚为桩实现**」—— 全是 8 天前的状态。已连同 `RESUME_INTERN_2026.md` 一起把数字口径统一到最新实测。
+3. `docs/resumes/archive/RESUME_校招_端侧AI部署.md` 里还写着 RKNN Runtime **1.5.2**、DFL 头「**正在实施**」、「NPU 推理**尚为桩实现**」—— 全是 8 天前的状态。已连同 `RESUME_INTERN_2026.md` 一起把数字口径统一到最新实测。
 
 ### 五条杀手故事(面试最值钱的部分)
 1. 官方 5.5ms vs 实测 37ms —— 同算子位置不同差 6 倍,归因不靠猜

@@ -467,7 +467,7 @@ v4l2-ctl -d /dev/video81 --set-fmt-video=width=1280,height=720,pixelformat=MJPG 
 > 「20 fps 是物理上限」是错的：真因是代码从没设 `CAP_PROP_FPS`，
 > 摄像头默认协商到 20fps。显式设 30fps 后实测 **33.33 ms/帧，零抖动**。
 > 下面的内容和"方法论"保留作**反面教材**——它示范了「默认值当成上限」这个错误。
-> 完整排查见 `docs/CAMERA_FPS_ROOT_CAUSE.md`。
+> 完整排查见 `docs/tech_notes/CAMERA_FPS_ROOT_CAUSE.md`。
 
 `bench_cam_fps.cpp`（只采集 + 解码，不推理不编码）实测：
 
@@ -736,13 +736,13 @@ cap.set(cv::CAP_PROP_FPS, 30);   // ★ 必须显式设置，否则默认协商�
 
 ```bash
 # 多步演示（含时延测量与完整 trace）
-python edgevision-rk3588/lab/agent_multistep_demo.py --out-dir _test_results
+python edgevision-rk3588/lab/agent_multistep_demo.py --out-dir _workbench/test_results
 
 # 单条用例（如条件决策 T08）
-python edgevision-rk3588/lab/agent_regression_test.py --only T08 --out-dir _test_results
+python edgevision-rk3588/lab/agent_regression_test.py --only T08 --out-dir _workbench/test_results
 ```
 
-结果在 `_test_results/<时间戳>/trace.json` 的 `act2_agent.wall_s` 与 `results.json` 的
+结果在 `_workbench/test_results/<时间戳>/trace.json` 的 `act2_agent.wall_s` 与 `results.json` 的
 `elapsed_s` 字段。
 
 ---
