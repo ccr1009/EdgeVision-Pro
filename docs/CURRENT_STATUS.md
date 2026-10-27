@@ -137,14 +137,14 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
      ② CSC 51~65ms 主因是 CPU 读 uncached DRM 内存（memcpy 仅 188MB/s）→ 正解 RGA 硬件转换
      （本板 RGA 2.1.0 不支持 full CSC，颜色偏差 ±13% 待量化）**← 现在这是 CPU 侧第一优先项**；
      ③ ~~MPP 硬编 JPEG（省 7.2ms）~~ ❌ **已实测否掉（负结论，见下方专节）**，不要再排期
-2. **双目 3D 视觉专项** —— ✅ **新项目 `stereo3d-rk3588` 已开工并真机跑通（2026-10-24）**：
+2. **双目 3D 视觉专项** —— ✅ **双目子项目 `stereo3d` 已开工并真机跑通（2026-10-24）**：
    - **能干什么**：板上 `/root/stereo3d/build/stereo3d_demo`，双摄 1280×720 → 立体矫正 → SGBM 视差 → 深度 → Haar 人脸框内深度中位数 → 3D 坐标 (X,Y,Z)，网页 2×2 实时预览 **`http://<board-ip>:8081`**
    - **实测**：cap 16.3 / rect 5.4 / **sgbm 46.1(瓶颈)** / depth 0.6 / face 20.6 / enc 7.2 ms，全链路 **9.7~11 FPS**；合成真值自检 21 项全 PASS（1/2/3m 层深中值误差 3.94/21.99/6.14 mm）
    - **⚠️ 诚实状态**：未标定（理想平行假设 fx=1108/B=60mm），绝对距离不可信；标定工具链 `tools/calib/` 已交付并自测通过（双目 RMS 0.044px / 极线 y 差 0.029px）
    - **✅ SGBM 提速已完成（task-5）**：诊断确认 OpenCV 带 TBB 已并行（46ms 是真实成本）；6 组×200 帧消融推荐 **nd=32+block=5**（42.83→36.17ms，−15.6%，有效视差占比反升；nd 64→32 理论省一半实测只 15.6%——DP 聚合访存与 D 无关）。参数支持环境变量覆盖（STEREO_NUM_DISP/STEREO_BLOCK）。≤20ms 需降分辨率 480×270，暂不启用
    - **下一步（双目）**：真实场景标定（拍棋盘格 → stereo_calibrate.py）后换掉假设参数，绝对距离才可信
    - 测试协议：**先 `systemctl stop edgevision` 释放 `/dev/video81`，测完必须 `start` 恢复**
-   - 文档:`stereo3d-rk3588/docs/{BENCHMARKS,PIPELINE,LEARNING_NEXT}.md` + 根 `docs/CALIB_FORMAT.md`
+   - 文档:`stereo3d/docs/{BENCHMARKS,PIPELINE,LEARNING_NEXT}.md` + `stereo3d/docs/CALIB_FORMAT.md`
 3. ✅ **第三阶段：Edge AI Agent 联动（首发通关）**：
    - 板端 C++ 控制面 RPC 服务 `lab/edgevision_agent_server.cpp`（端口 8088）上线，提供 7 温区监控、NPU 3核负载、LED 物理灯控制、9000 端口目标检测采样三大原子硬件工具；
    - PC 客户端 `lab/edge_agent_client.py` 成功打通，内置 ReAct 思考规划引擎（Thought -> Action -> Observation -> Final Answer），实操跑通多步自主巡检。

@@ -66,7 +66,7 @@
 - 每条 CLI 用例独立起进程: `ssh <host> "cd /root/rkllm_deploy && timeout 180 ./<bin> '<query>'"`,
   query 经 base64 过线（默认）或 shlex.quote 转义（`--no-b64`）, 单引号安全。
 - REPL 用例把输入序列（含 `exit`）经 stdin 一次性喂入。
-- 结果落盘 `lab/agent_test_results/<时间戳>/results.json`（逐用例 pass/fail + 原始 stdout）
+- 结果落盘 `<工作区>/_workbench/test_results/<时间戳>/results.json`（逐用例 pass/fail + 原始 stdout）
   与 `summary.md`（通过率表格）。
 
 ---
