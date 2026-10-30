@@ -1,0 +1,9 @@
+# EdgeVision 巡检守护的运行参数
+# 改完执行: systemctl restart edgevision-patrol
+#
+# 生产阈值(真实过热保护):
+#   PATROL_ARGS="--temp-enter 75 --temp-exit 70 --interval 5"
+#
+# 验收/演示阈值(低于环境温度即触发, 用于验证报警链路打通):
+#   PATROL_ARGS="--temp-enter 20 --temp-exit 18 --interval 2"
+PATROL_ARGS="--temp-enter 75 --temp-exit 70 --interval 5"

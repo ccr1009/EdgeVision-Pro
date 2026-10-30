@@ -60,3 +60,6 @@ tmp/
 _test_results/
 lab/agent_test_results/*
 !lab/agent_test_results/README.txt
+
+# Windows 沙箱权限修复的备份（2026-10-29，ACL 报告 + 回滚脚本，含本机 SID，不入库）
+_acl_report/

@@ -46,6 +46,43 @@ static std::string read_file_string(const std::string& path) {
     return s;
 }
 
+// -------------------------------------------------------------
+// UTF-8 合法性校验与清洗
+// 背景（2026-10-29 实测）：Agent 的 stdin 来自终端，若客户端终端编码不是 UTF-8
+// （Windows PowerShell 默认 GBK），中文会以非法字节序列送达。rkllm 的 tokenizer
+// 收到非法 UTF-8 会抛 std::invalid_argument，此前无人捕获 → terminate / Aborted。
+// 现象：输入 "led改为常亮" 回显成 "?led改为常?亮"，紧接着进程 abort。
+// 结论：外部输入一律不可信。这里把非法字节替换为 '?'，并把"发生过替换"告诉调用方，
+//       让它能提示用户去改终端编码，而不是静默带着乱码去推理。
+// -------------------------------------------------------------
+static bool sanitize_utf8(std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    bool changed = false;
+    size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = (unsigned char)s[i];
+        size_t len = 0;
+        if (c < 0x80)                 len = 1;                              // ASCII
+        else if ((c & 0xE0) == 0xC0)  len = 2;
+        else if ((c & 0xF0) == 0xE0)  len = 3;
+        else if ((c & 0xF8) == 0xF0)  len = 4;
+        else { changed = true; out += '?'; ++i; continue; }                 // 非法首字节
+
+        if (i + len > s.size()) { changed = true; out += '?'; break; }      // 截断的多字节
+        bool ok = true;
+        for (size_t k = 1; k < len; ++k) {
+            if (((unsigned char)s[i + k] & 0xC0) != 0x80) { ok = false; break; }  // 续字节不合法
+        }
+        if (!ok) { changed = true; out += '?'; ++i; continue; }
+
+        out.append(s, i, len);
+        i += len;
+    }
+    s.swap(out);
+    return changed;
+}
+
 static bool write_file_string(const std::string& path, const std::string& val) {
     std::ofstream file(path);
     if (!file.is_open()) return false;
@@ -132,7 +169,13 @@ std::string tool_get_system_health() {
        << "\"mem_avail_mb\": " << (avail_kb / 1024) << ", "
        << "\"current_led_mode\": \"" << led_mode << "\", "
        << "\"hardware_model\": \"Rockchip RK3588 (8GB)\", "
-       << "\"status\": \"" << (soc_temp > 75.0 ? "high_temperature_warning" : "normal_optimal") << "\""
+       // 这里刻意不再输出 normal_optimal / high_temperature_warning 这类「结论」字段。
+       // 原因: 旧版写死 soc_temp > 75.0 判定, 而告警阈值实际由巡检守护的命令行参数决定
+       // (验收时是 20C)。二者不一致时, 模型只看到 status=normal_optimal 就直接回
+       // 「温度正常所以不会报警」, 把一个错误前提当成了事实。
+       // 现在只给原始温度, 并把「会不会报警」明确指给 get_patrol_status。
+       << "\"temp_warning_note\": \"本字段只给原始温度读数, 不含告警判断。"
+       << "是否触发告警取决于巡检守护当前生效阈值, 请调用 get_patrol_status 查询。\""
        << "}]";
     return ss.str();
 }
@@ -140,19 +183,51 @@ std::string tool_get_system_health() {
 // -------------------------------------------------------------
 // 工具 2: 查询当前 LED 状态 (读操作)
 // -------------------------------------------------------------
+// 采样一个时间窗内「亮」的比例(0~100%)。
+// 为什么不能直接回填瞬时 brightness: heartbeat 由内核 trigger 周期性翻转,
+// 实测占空比只有 20~25%(灭相占 75% 以上), 单点读 0 的概率约 78%。
+// 旧版直接把裸 brightness 给模型, 模型据此答「亮度 0（关闭）」,
+// 与同一句里的「正常呼吸闪烁」自相矛盾 —— 这是采样假象, 不是灯灭了。
+// 采样窗必须 >= 1.2 个最慢周期(heartbeat 约 1s): 20 x 60ms = 1.2s。
+// 判读参考(实测): heartbeat 20~25% / 用户态爆闪约 50% / 常亮 100% / 关闭 0%。
+static int sample_brightness_duty_pct(int samples, int interval_us) {
+    int hi = 0;
+    for (int i = 0; i < samples; ++i) {
+        std::string s = read_file_string("/sys/class/leds/work/brightness");
+        if (!s.empty() && s != "0") hi++;
+        usleep(interval_us);
+    }
+    if (samples <= 0) return -1;
+    return (int)((long)hi * 100 / samples);
+}
+
 std::string tool_get_led_status() {
     std::string mode = get_led_current_mode();
     std::string br = read_file_string("/sys/class/leds/work/brightness");
+
+    // 周期驱动的模式(心跳/爆闪)只报占空比; 静态模式(常亮/关闭)才报瞬时亮度。
+    bool periodic = (mode == "heartbeat" || mode == "alarm" || mode == "alarm_blink");
+    int duty = periodic ? sample_brightness_duty_pct(20, 60000) : -1;
+
+    std::string desc = (mode == "heartbeat" ? "正常呼吸闪烁"
+                      : (mode == "alarm" ? "100ms急闪报警"
+                      : (mode == "alarm_blink" ? "100ms急闪报警(用户态爆闪运行中)"
+                      : (mode == "on" ? "常亮模式" : "熄灭关闭"))));
+
     std::stringstream ss;
     ss << "[{"
        << "\"led_name\": \"work\", "
        << "\"current_mode\": \"" << mode << "\", "
-       << "\"brightness\": " << (br.empty() ? "0" : br) << ", "
-       << "\"description\": \"" << (mode == "heartbeat" ? "正常呼吸闪烁"
-                                       : (mode == "alarm" ? "100ms急闪报警"
-                                       : (mode == "alarm_blink" ? "100ms急闪报警(用户态爆闪运行中)"
-                                       : (mode == "on" ? "常亮模式" : "熄灭关闭")))) << "\""
-       << "}]";
+       << "\"description\": \"" << desc << "\", ";
+    if (periodic) {
+        ss << "\"brightness_duty_pct\": " << duty << ", "
+           << "\"brightness_note\": \"该模式由内核触发器/用户态爆闪周期性翻转, 瞬时亮度读数为 0 属正常"
+              "(心跳的灭相占 75% 以上), 不代表关闭。判定请看 brightness_duty_pct: "
+              "心跳约 20~25%, 爆闪报警约 50%, 常亮 100%, 关闭 0%。\"";
+    } else {
+        ss << "\"brightness\": " << (br.empty() ? "0" : br);
+    }
+    ss << "}]";
     return ss.str();
 }
 
@@ -611,6 +686,113 @@ static std::string extract_json_field(const std::string& line, const char* key) 
     return v;
 }
 
+// -------------------------------------------------------------
+// 工具 6: 读取巡检守护的「运行态」 (读操作)
+//   与 get_patrol_events 的分工:
+//     - get_patrol_events: 过去发生过什么(黑匣子/历史), 只能研判历史
+//     - get_patrol_status: 现在谁在控灯、阈值多少、还活着吗(运行态), 决定「会不会报警」
+//   为什么必须单开一个工具: 没有它时 Agent 只能拿到历史事件里那句「超过20C阈值」,
+//   却无法区分这条是「正在生效」还是「三天前的旧记录」, 于是退回去用 prompt 里写死的
+//   75C 默认值当当前阈值 —— 实测因此给出「44C 远低于 75C, 不会报警」的错误结论,
+//   而当时守护正是用 20C 阈值在跑, 灯其实应该在闪。
+// -------------------------------------------------------------
+#define PATROL_STATE_FILE "/root/patrol/patrol_state.json"
+
+static std::string tool_get_patrol_status() {
+    std::string raw = read_file_string(PATROL_STATE_FILE);
+    if (raw.empty()) {
+        return "[{\"running\": false, \"reason\": \"state_file_missing\", "
+               "\"verdict\": \"巡检守护从未启动或快照未生成, 当前没有任何进程会自动控制 LED, "
+               "因此不会因温度/人员自动报警。\"}]";
+    }
+
+    // 新鲜度: updated_at 距今超过 stale_after_s 即判定失联。
+    // 守护正常运行时每周期刷新一次; 被 kill -9 后文件就停住不再更新,
+    // 这是「进程已死」唯一可靠的信号(锁文件也会随内核释放, 但没有时间戳可比)。
+    // 手写 sscanf 解析而不上 strptime: strptime 要 _XOPEN_SOURCE 宏, 板上 g++ 下易踩未声明。
+    long age_s = -1;
+    std::string upd = extract_json_field(raw, "updated_at");
+    if (!upd.empty()) {
+        int Y = 0, M = 0, D = 0, h = 0, mi = 0, se = 0;
+        if (sscanf(upd.c_str(), "%d-%d-%d %d:%d:%d", &Y, &M, &D, &h, &mi, &se) == 6) {
+            struct tm tmv;
+            memset(&tmv, 0, sizeof(tmv));
+            tmv.tm_year = Y - 1900; tmv.tm_mon = M - 1; tmv.tm_mday = D;
+            tmv.tm_hour = h; tmv.tm_min = mi; tmv.tm_sec = se;
+            tmv.tm_isdst = -1;
+            time_t t_event = mktime(&tmv);
+            if (t_event != (time_t)-1) age_s = (long)(time(nullptr) - t_event);
+        }
+    }
+
+    long stale_after = 15; // 兜底: 快照里没写就按 15s 判
+    std::string sa = extract_json_field(raw, "stale_after_s");
+    if (!sa.empty()) { long v = atol(sa.c_str()); if (v > 0) stale_after = v; }
+
+    bool file_running = (extract_json_field(raw, "running").find("true") != std::string::npos);
+    bool fresh        = (age_s >= 0 && age_s <= stale_after);
+
+    // 双重校验: 时间戳新鲜 且 pid 还活着 才算真的在跑。
+    // 只看时间戳会漏「进程刚死但快照还没过期」的两三个周期窗口;
+    // 只看 pid 会漏「pid 被内核复用给了别的进程」。
+    bool pid_alive = false;
+    std::string pid_s = extract_json_field(raw, "pid");
+    if (!pid_s.empty()) {
+        pid_t pid = (pid_t)atol(pid_s.c_str());
+        if (pid > 1 && kill(pid, 0) == 0) pid_alive = true;
+    }
+    bool running = file_running && fresh && pid_alive;
+
+    std::string reason;
+    if (!file_running)      reason = "daemon_stopped";
+    else if (!fresh)        reason = "snapshot_stale";
+    else if (!pid_alive)    reason = "pid_gone";
+    else                    reason = "running";
+
+    std::string state   = extract_json_field(raw, "state");
+    std::string temp    = extract_json_field(raw, "soc_temp_c");
+    std::string enter_c = extract_json_field(raw, "temp_enter_c");
+    std::string exit_c  = extract_json_field(raw, "temp_exit_c");
+    std::string score   = extract_json_field(raw, "person_score_th");
+    std::string led     = extract_json_field(raw, "led");
+    std::string mode    = extract_json_field(raw, "mode");
+    std::string itv     = extract_json_field(raw, "interval_s");
+
+    std::stringstream ss;
+    ss << "[{"
+       << "\"running\": " << (running ? "true" : "false") << ", "
+       << "\"reason\": \"" << reason << "\", "
+       << "\"snapshot_age_s\": " << (age_s < 0 ? -1 : age_s) << ", "
+       << "\"pid\": " << (pid_s.empty() ? "0" : pid_s.c_str()) << ", "
+       << "\"mode\": \"" << (mode.empty() ? "unknown" : mode.c_str()) << "\", "
+       << "\"interval_s\": " << (itv.empty() ? "0" : itv.c_str()) << ", "
+       // 这三个是「当前真正生效」的阈值, 必须与日志里历史事件的阈值区分开
+       << "\"active_thresholds\": {"
+       <<   "\"soc_temp_enter_c\": " << (enter_c.empty() ? "0" : enter_c.c_str()) << ", "
+       <<   "\"soc_temp_exit_c\": " << (exit_c.empty() ? "0" : exit_c.c_str()) << ", "
+       <<   "\"person_score\": " << (score.empty() ? "0" : score.c_str())
+       << "}, "
+       << "\"last_state\": \"" << (state.empty() ? "unknown" : state.c_str()) << "\", "
+       << "\"soc_temp_c\": " << (temp.empty() || temp == "null" ? "0" : temp.c_str()) << ", "
+       << "\"led_target\": \"" << (led.empty() ? "unknown" : led.c_str()) << "\", "
+       << "\"updated_at\": \"" << upd << "\", "
+       << "\"verdict\": \"";
+
+    if (!running) {
+        ss << "巡检守护当前未运行(" << reason << "), 没有任何进程会自动根据温度/人员切换 LED; "
+              "LED 停留在守护最后一次写入的状态。设备温度本身仍可正常读取, 但不会自动报警。";
+    } else if (state == "THERMAL_ALERT") {
+        ss << "巡检守护正在运行, 且当前处于温度告警态: SOC 温度已超过 active_thresholds.soc_temp_enter_c, "
+              "LED 应为报警快闪。";
+    } else if (state == "PERSON_ALERT") {
+        ss << "巡检守护正在运行, 且当前处于人员告警态, LED 应为报警快闪。";
+    } else {
+        ss << "巡检守护正在运行, 当前无告警, LED 应在心跳呼吸态。";
+    }
+    ss << "\"}]";
+    return ss.str();
+}
+
 std::string tool_get_patrol_events(const std::string& tail_raw) {
     // 参数 tail: 默认 10, 上限 50, 非法值回退默认
     int tail_n = 10;
@@ -658,6 +840,17 @@ std::string tool_get_patrol_events(const std::string& tail_raw) {
         if (summary.empty()) summary = extract_json_field(line, "detail");
         if (!summary.empty() && summary.front() == '{')
             summary = ""; // detail 是嵌套对象, 拍平无意义(如 DAEMON_START), 置空留给 type 表意
+        // DAEMON_START 的阈值/间隔只存在 detail 对象里(该行根本没有 summary 键),
+        // 直接置空就丢掉了「这轮守护按什么阈值启动」这条唯一线索 —— 曾因此让 Agent
+        // 以为阈值就是默认 75C。这里显式把关键配置重建成一句话。
+        if (type == "DAEMON_START" && summary.empty()) {
+            std::string te = extract_json_field(line, "temp_enter_c");
+            std::string tx = extract_json_field(line, "temp_exit_c");
+            std::string iv = extract_json_field(line, "interval_s");
+            summary = std::string("巡检守护启动: 温度告警阈值 ") + (te.empty() ? "?" : te) +
+                      "C(恢复 " + (tx.empty() ? "?" : tx) + "C), 采样间隔 " +
+                      (iv.empty() ? "?" : iv) + "s";
+        }
         if (summary.size() > 200) summary = summary.substr(0, 200); // 控制回填体积
         if (ts.empty() && type.empty()) continue; // 既无 ts 也无 type 的行丢弃
 
@@ -753,6 +946,8 @@ bool dispatch_all_tool_calls(const std::string& model_output, std::string& combi
         } else if (tool_name == "get_patrol_events") {
             std::cout << "   -> 设定参数: tail = " << param_tail << std::endl;
             obs = tool_get_patrol_events(param_tail);
+        } else if (tool_name == "get_patrol_status") {
+            obs = tool_get_patrol_status();
         } else {
             obs = "[{\"error\": \"Unknown tool requested: " + tool_name + "\"}]";
         }
@@ -847,6 +1042,17 @@ void run_agent_turn(LLMHandle handle, RKLLMInferParam& infer, const std::string&
         std::cout << "\n⚠️  [Agent] 工具执行轮数已达上限，任务未完成。" << std::endl;
         std::cout << "    (已连续执行 5 轮工具调用仍收到新的 <tool_call> 请求, 已停止调度, 避免无限循环)" << std::endl;
     }
+
+    // 空输出兜底（2026-10-29 实测补充）：
+    // 模型返回 0 个 token 时，callback 只补一个换行，屏幕上什么都不出现，
+    // 用户无法区分"它没听懂"和"它已经死了"——实测被误判为卡死。
+    if (g_step_output.empty()) {
+        std::cout << "\n⚠️  [Agent] 模型本轮未输出任何内容"
+                     "（通常是输入过短/意图不明确，或终端编码异常）。"
+                  << std::endl
+                  << "    请换一种更完整的问法重试，例如「查一下开发板当前温度」。"
+                  << std::endl;
+    }
 }
 
 int main(int argc, char** argv) {
@@ -896,12 +1102,31 @@ int main(int argc, char** argv) {
         "- 内存: 8GB LPDDR4x，操作系统: Linux Debian 11 (bullseye), 内核 5.10.110\n"
         "- 外设: 板载工作指示灯 /sys/class/leds/work/，双目 UVC 相机 (/dev/video81, /dev/video83)\n"
         "- 视觉系统: 后台作为守护进程运行 EdgeVision YOLOv8 工业检测服务 (端口 9000)\n"
-        "- 温度常识: RK3588 的 SOC 正常工作温度为 30~65°C，超过 75°C 才算过热告警，"
-        "85°C 以上才需要担心降频/损坏。若巡检事件的温度阈值明显偏低(如 20°C)，"
-        "说明守护进程是用评测阈值在跑验收，**不要据此判定设备真的过热**，"
-        "应指出\"当前温度在正常范围内，告警是低阈值触发的演示\"。\n"
+        "- 温度常识: RK3588 的 SOC 正常工作温度为 30~65°C，85°C 以上才需要担心降频/损坏。\n"
+        "- 【关键区分·告警阈值 ≠ 物理过热阈值】是否触发 LED 报警闪烁，唯一依据是巡检守护"
+        "进程**当前实际生效**的阈值，必须调用 get_patrol_status 读取 active_thresholds.soc_temp_enter_c。"
+        "严禁用 75°C 这类默认值、或用\"温度在正常范围内\"反推\"所以不会报警\"——"
+        "守护验收时常以 --temp-enter 20 这类低阈值运行，此时 44°C 早已满足报警条件。\n"
+        "- 若实际阈值明显偏低(如 20°C)，那是守护用评测阈值跑验收：应把两件事分开如实说明——"
+        "\"设备物理温度正常(44°C 不会损坏)\"+\"但按守护当前 20°C 阈值已满足报警条件\"，"
+        "绝不能因为\"物理上不过热\"就否定\"按阈值正在报警\"。\n"
+        "- 【禁止混淆·常见错误】\"超过告警阈值\" ≠ \"温度超出正常范围\"。"
+        "50°C 超过 20°C 阈值，但仍在 30~65°C 正常范围内，属于\"温度正常、阈值偏低\"。"
+        "只有实测 >65°C 才可说\"偏高\"，>75°C 才可说\"过热\"。"
+        "严禁出现\"50.85°C 也在正常范围之外\"这类自相矛盾的表述，"
+        "也不要把\"超出告警阈值\"直接写成\"温度异常\"。\n"
+        "- 【历史 ≠ 现状】get_patrol_events 只说明过去发生过什么，get_patrol_status 才说明此刻的"
+        "运行态。回答\"现在会不会报警/灯在闪吗\"必须先看 get_patrol_status；"
+        "若其 running=false，必须明确指出\"巡检守护当前未运行，不会有自动报警，"
+        "LED 停留在守护最后一次写入的状态\"，不能只说\"温度正常所以不报警\"。\n"
         "【工具调用准则】:\n"
         "- 查询指示灯状态请调用 get_led_status，改变指示灯才调用 control_led。\n"
+        "- 【LED 读数】heartbeat 与爆闪模式下 brightness 由触发器周期性翻转(心跳的灭相占 75% 以上)，"
+        "瞬时读到 0 是正常的采样假象，**绝不等于\"关闭\"**。判断灯态只看 current_mode / description / "
+        "brightness_duty_pct，严禁把 brightness 的瞬时值当成开关状态，也不许在同一句里既说"
+        "\"亮度0关闭\"又说\"正常呼吸闪烁\"。\n"
+        "- 用户问\"警告灯/报警灯/有没有告警/安全吗\"这类问题时，除 get_led_status 外还要调用 "
+        "get_patrol_status，两者结合才能说清\"灯现在是什么模式\"和\"为什么是这个模式\"。\n"
         "- 【最高优先级】当用户明确要求把灯调成某个模式（如心跳呼吸/报警/常亮/关闭）时，"
         "这是用户的直接指令，必须立即调用 control_led 并把 mode 设为用户要求的值，"
         "即使查询到当前状态接近或相同也要显式执行（幂等写），绝不能因为\"当前已经是这样\"而跳过；"
@@ -909,9 +1134,13 @@ int main(int argc, char** argv) {
         "- 查询整体硬件健康和温度请调用 get_system_health。\n"
         "- 查询画面识别目标请调用 get_vision_telemetry。\n"
         "- 查询巡检守护产生的硬件告警事件请调用 get_patrol_events。\n"
-        "- 【重要】遇到条件指令或需要多步研判的任务，必须先调用 get_system_health、"
-        "get_vision_telemetry、get_patrol_events 等感知工具拿到全量真实数据，再决策下一步动作；"
-        "绝对不能跳过感知直接执行动作。\n"
+        "- 查询巡检守护**当前是否在运行、实际生效阈值、当前告警状态**请调用 get_patrol_status。\n"
+        "- 【按需调用·严禁过度感知】只调用能直接回答本问题的那一个工具。"
+        "用户打招呼、闲聊、问你是谁、道谢、告别时，**直接用一句话回应，不要调用任何工具**。"
+        "只有问题确实涉及某项数据时才调对应工具（问温度→get_system_health，问灯→get_led_status，"
+        "问画面→get_vision_telemetry，问告警/守护状态→get_patrol_status）。"
+        "每次调工具前先自问：这条数据对回答本问题是必需的吗？"
+        "严禁做\"全面体检\"式的批量调用——那会让用户干等一分多钟。\n"
         "- 【重要】研判类任务（如询问设备是否发生过异常、综合巡检）应优先读取巡检事件"
         "进行研判并如实汇报；但当用户明确下达指示灯控制指令（如恢复心跳呼吸灯、调成报警、"
         "关闭指示灯）时，这是用户的直接指令，必须立即调用 control_led 按用户要求的模式执行，"
@@ -921,7 +1150,11 @@ int main(int argc, char** argv) {
         "（如\"画面里有人就报警\"必须先调 get_vision_telemetry 查看当前画面，"
         "巡检事件里没有人员记录不代表画面里现在没有人）；巡检事件只用于研判过去，"
         "不能代替当前实时感知，也不能以\"守护进程已处理\"为由跳过用户要求且条件未触发的动作。\n"
-        "- 严禁捏造虚假硬件数据，用流畅精炼的中文汇报。\n"
+        "- 严禁捏造虚假硬件数据。\n"
+        "- 【语音场景·必须极简】你的回答会被 TTS 朗读给用户听，用户是\"听\"不是\"读\"。"
+        "默认限制在 **2 句话、40 字以内**，只给结论和最关键的一个数字；"
+        "不要列字段清单、不要分点长篇、不要重复工具名。"
+        "只有用户明确要求\"详细报告/完整汇报\"时才可展开。\n"
         "- 汇报时只陈述工具真实返回的字段，**不要臆测工具的内部实现**"
         "（如猜测 control_led 的枚举值编码、猜测 sysfs 节点的数值含义）。"
         "拿不准的就说不确定或直接省略，不要编一段\"若系统内部逻辑为0=off…\"之类的推测。\n"
@@ -958,7 +1191,7 @@ int main(int argc, char** argv) {
         "type": "function",
         "function": {
           "name": "get_led_status",
-          "description": "查询板载物理 LED 指示灯当前的工作模式(心跳heartbeat、急闪alarm、常亮on、关闭off)与亮度",
+          "description": "查询板载物理 LED 指示灯当前的工作模式(心跳heartbeat、急闪alarm、常亮on、关闭off)。周期模式(心跳/爆闪)返回 brightness_duty_pct = 亮的采样点占比(心跳约20~25%、爆闪约50%), 静态模式(常亮/关闭)返回 brightness。注意: 心跳的瞬时亮度多数时间为 0, 不代表关闭",
           "parameters": {
             "type": "object",
             "properties": {}
@@ -1009,6 +1242,17 @@ int main(int argc, char** argv) {
             }
           }
         }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_patrol_status",
+          "description": "查询巡检守护进程的当前运行态: 是否在运行、当前实际生效的温度告警阈值/人员阈值、当前状态(NORMAL/PERSON_ALERT/THERMAL_ALERT)以及守护最后一次写入的LED目标态。判断「现在会不会报警」必须调用它, 不能用历史事件或默认阈值推断",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
       }
     ])RAW";
 
@@ -1024,7 +1268,15 @@ int main(int argc, char** argv) {
     // 1. 如果指定了命令行参数，执行该单轮查询 (--no-led 已剥离)
     if (!args.empty()) {
         std::string query = args[0];
-        run_agent_turn(handle, infer, query);
+        if (sanitize_utf8(query)) {
+            std::cerr << "⚠️  命令行参数含非 UTF-8 字节，已替换为 '?'（shell 编码与板端不一致）"
+                      << std::endl;
+        }
+        try {
+            run_agent_turn(handle, infer, query);
+        } catch (const std::exception& e) {
+            std::cerr << "❌ [Agent] 本轮异常: " << e.what() << std::endl;
+        }
     } else {
         // 2. 无参数时，进入常驻交互式 REPL 控制台！
         std::cout << "\n========================================================" << std::endl;
@@ -1042,6 +1294,14 @@ int main(int argc, char** argv) {
             while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
             if (line.empty()) continue;
 
+            // 外部输入不可信：先校验 UTF-8 再送进 tokenizer。
+            // 非法字节会让 rkllm 抛异常；这里替换成 '?' 并明确告知用户去改终端编码。
+            if (sanitize_utf8(line)) {
+                std::cout << "⚠️  输入含非 UTF-8 字节（终端编码可能不是 UTF-8），已替换为 '?'。\n"
+                             "    Windows 下请先执行 `chcp 65001`，或在 SSH 客户端里把字符集设为 UTF-8。"
+                          << std::endl;
+            }
+
             if (line == "exit" || line == "quit" || line == "/quit" || line == "q") {
                 std::cout << "正在退出 Agent 控制台..." << std::endl;
                 break;
@@ -1052,7 +1312,15 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            run_agent_turn(handle, infer, line);
+            // 异常边界：单轮失败不该带走整个常驻控制台。
+            // 此前没有这层保护，rkllm 内部抛 std::invalid_argument 会直接 terminate。
+            try {
+                run_agent_turn(handle, infer, line);
+            } catch (const std::exception& e) {
+                std::cout << "\n❌ [Agent] 本轮异常已捕获，控制台继续运行: " << e.what() << std::endl;
+            } catch (...) {
+                std::cout << "\n❌ [Agent] 本轮未知异常已捕获，控制台继续运行。" << std::endl;
+            }
         }
     }
 

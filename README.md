@@ -247,7 +247,14 @@ make -j4
 ```bash
 ./edgevision_pro /root/edgevision/data/calib_v2/real_000.jpg
 ```
+| 端口 | 用途 |
+|---|---|
+| `:8080` | 真实检测框网页预览（MJPEG，`w4_edgevision_preview_real`） |
+| `:8081` | stereo3d 双目 2×2 预览 |
+| `:8088` | Agent 控制面 RPC（status / LED / vision） |
+| `:8090` | 车载道路 3D 看板 |
 
+> 浏览器开 `http://<板子IP>:<端口>`（板子 IP 见本地私密记录，不入库）。
 ### 1.5 车载道路实景 3D 看板（8090 端口，2026-10-26）
 
 ```bash

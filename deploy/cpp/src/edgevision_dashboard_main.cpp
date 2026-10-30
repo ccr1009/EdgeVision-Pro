@@ -383,7 +383,8 @@ struct Args {
 static void usage(const char* prog) {
     printf("用法: %s [选项]\n", prog);
     printf("  --port N         HTTP 端口（默认 8090）\n");
-    printf("  --video PATH     循环读取的视频（默认 data/videos/highway_traffic.mp4）\n");
+    printf("  --video PATH     视频文件或摄像头设备路径 (如 /dev/video83 或 data/videos/highway_traffic.mp4)\n");
+    printf("  --cam DEV        摄像头设备节点别名 (等价于 --video /dev/videoXX)\n");
     printf("  --model PATH     RKNN 模型（默认 data/models/yolov8n_dflfree_rk3588_i8.rknn）\n");
     printf("  --web PATH       网页文件（默认 deploy/cpp/web/dashboard.html）\n");
     printf("  --width N        推流宽度（默认 1280）\n");
@@ -427,6 +428,7 @@ int main(int argc, char** argv) {
         };
         if (a == "--port") args.port = std::atoi(next("--port").c_str());
         else if (a == "--video") args.video = next("--video");
+        else if (a == "--cam") args.video = next("--cam");
         else if (a == "--model") args.model = next("--model");
         else if (a == "--web") args.web = next("--web");
         else if (a == "--width") args.out_w = std::atoi(next("--width").c_str());
@@ -454,19 +456,50 @@ int main(int argc, char** argv) {
     printf("  RK3588 板端原生 C++ | YOLOv8n DFL-Free INT8 | 真实链路，无仿真数据\n");
     printf("==================================================================\n");
 
-    // ---------------- 1. 打开视频 ----------------
-    cv::VideoCapture cap(args.video);
-    if (!cap.isOpened()) {
-        fprintf(stderr, "[FAIL] 打不开视频: %s\n", args.video.c_str());
-        return 1;
+    // ---------------- 1. 视频源 / 摄像头 ----------------
+    bool is_cam = (args.video.rfind("/dev/video", 0) == 0);
+    cv::VideoCapture cap;
+    int src_w = 1280, src_h = 720;
+    double src_fps = 30.0;
+    int src_frames = 0;
+
+    if (is_cam) {
+        cap.open(args.video, cv::CAP_V4L2);
+        if (!cap.isOpened()) {
+            fprintf(stderr, "[FAIL] 无法打开摄像头设备: %s\n", args.video.c_str());
+            return 1;
+        }
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
+        cap.set(cv::CAP_PROP_FPS, 30);
+
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "v4l2-ctl -d %s --set-ctrl=exposure_auto_priority=0 >/dev/null 2>&1", args.video.c_str());
+        system(cmd);
+
+        // 硬件预热 15 帧确保自动曝光收敛
+        cv::Mat warm;
+        for (int i = 0; i < 15; ++i) {
+            cap.read(warm);
+        }
+        src_w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        src_h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        printf("[+] 摄像头就绪: %s\n", args.video.c_str());
+        printf("    硬件采集 %dx%d @ 30.0 fps (MJPG 硬件流已锁定)\n", src_w, src_h);
+    } else {
+        cap.open(args.video);
+        if (!cap.isOpened()) {
+            fprintf(stderr, "[FAIL] 打不开视频: %s\n", args.video.c_str());
+            return 1;
+        }
+        src_w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        src_h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        src_fps = cap.get(cv::CAP_PROP_FPS);
+        src_frames = (int)cap.get(cv::CAP_PROP_FRAME_COUNT);
+        printf("[+] 视频文件: %s\n", args.video.c_str());
+        printf("    源 %dx%d @ %.1f fps, %d 帧, 循环播放\n", src_w, src_h, src_fps, src_frames);
     }
-    const int src_w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
-    const int src_h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
-    const double src_fps = cap.get(cv::CAP_PROP_FPS);
-    const int src_frames = (int)cap.get(cv::CAP_PROP_FRAME_COUNT);
-    printf("[+] 视频: %s\n", args.video.c_str());
-    printf("    源 %dx%d @ %.1f fps, %d 帧 (约 %.1f 秒), 循环播放\n",
-           src_w, src_h, src_fps, src_frames, src_fps > 0 ? src_frames / src_fps : 0.0);
 
     // ---------------- 2. 加载模型 ----------------
     RKNNEngineDflFree npu;
@@ -554,11 +587,15 @@ int main(int argc, char** argv) {
         double t0 = now_ms();
         cv::Mat raw;
         if (!cap.read(raw) || raw.empty()) {
-            // 读完一圈 -> 回到第 0 帧接着循环（真实视频循环，不是拼接假帧）
+            if (is_cam) {
+                usleep(5000);
+                continue;
+            }
+            // 读完一圈 -> 回到第 0 帧
             cap.set(cv::CAP_PROP_POS_FRAMES, 0);
             ++loop_index;
             if (!cap.read(raw) || raw.empty()) {
-                fprintf(stderr, "[FAIL] 视频读帧失败，且回到开头也读不到，退出\n");
+                fprintf(stderr, "[FAIL] 读取视频帧失败，重新回到开头依然失败，退出\n");
                 break;
             }
         }
@@ -738,7 +775,7 @@ int main(int argc, char** argv) {
         g_slot.cv.notify_all();
 
         // ---- 6.9 节流到源视频帧率（跟不上就全速跑，不 sleep）----
-        if (args.pace) {
+        if (!is_cam && args.pace) {
             next_deadline += frame_period_ms;
             const double now = now_ms();
             if (next_deadline > now + 1.0) {

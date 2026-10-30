@@ -5,7 +5,7 @@
 ## 一句话
 RK3588 EVM3588-B 边缘AI校招项目 + Linux 应用层学习。
 
-> 最后一次更新:**2026-10-26 · 定位并解决 `rkllm_init failed`(NPU IOMMU 4 GiB 地址空间耗尽)** —— 见下方「关键运行约束」
+> 最后一次更新:**2026-10-30 · 语音链路(ASR/TTS/编排网关)实测结果归位** —— 此前只写在 `VOICE_ASR_PLAN.md` 第 6 节,没进本快照与 BENCHMARKS;现补 **M2 小节** + `BENCHMARKS.md` **2.11 节**。更早一次是 2026-10-28 的 Agent「报警阈值可发现性」缺陷修复;再往前是 2026-10-26 的 `rkllm_init failed`(NPU IOMMU 4 GiB 地址空间耗尽),见下方「关键运行约束」
 
 ## ⚠️ 关键运行约束:NPU IOMMU 只有 4 GiB(和物理内存是两回事)
 
@@ -84,6 +84,50 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
   - 视觉输入:真实 USB 摄像头 `/dev/video81`(720P -> 640x640 预处理)
   - 核心算力:RK3588 3个物理 NPU 核心真硬绑定并发推理(`yolov8n_rk3588_i8.rknn`)
   - 延迟与吞吐:单帧推理稳态 **35.8 ~ 36.4 ms**，上位机连续推流 **800+ 帧稳居 24.2 FPS**
+
+### ✅ 学习线第五阶段 M1(IPC)已完成实测(2026-10-29)
+- **补的是第一阶段漏掉的整块**:第 1~4 周做了 文件IO/进程/线程/Socket/epoll,
+  **唯独没做进程间通信**。面试出现频率与 epoll 同级。
+- **交付**:`lab/ipc/{ipc_bench.cpp, spin_cost.cpp, README.md, results_20261029.txt, spin_cost_results.txt}`
+  (板端 `/root/lab/ipc/`),8 种机制 × 3 种载荷 × 延迟/吞吐/CPU 三维实测。
+- **核心数字**(248B 定长帧 RTT,`taskset -c 6,7`,后台服务已停):
+  `shm_spin 0.583us` < `unix_stream 5.83us` < `pipe/fifo 7.0us` < `shm_sem 8.17us` < `tcp 13.1us`
+  —— **`shm_spin` 比 `shm_sem` 快 14×,两者数据结构完全相同,差值纯是系统调用成本**(最干净的对照实验)。
+- **决定性对照**:吞吐 921600B(720p 灰度整帧)时**所有机制塌到同一水平**(7~8K 条/s ≈ 6.5GB/s),
+  瓶颈变成内存带宽 → **换 IPC 机制省不了大帧的带宽,只能减少拷贝次数**。
+- **等待策略实测**(`spin_cost.cpp`):缓冲填满时 `spin` 让生产者 **CPU 100%**(1680ms CPU / 1680ms 墙钟),
+  而 `sem` 只要 **0.27ms**、`adaptive` **0.44ms**;但缓冲足够大时**四者毫无差别**(0.03~0.04ms)
+  → 工程最优是先加深队列,其次才是选 adaptive(真实 futex 自适应自旋的动机,自己量出来了)。
+- **踩坑 3 条**(详见 `lab/ipc/README.md` 第 3.2 节与下文):
+  ① 首版 SPSC 用「单槽 + 二值 flag」在单向灌模式下丢消息 → 板上留下两个 99.6% CPU 的孤儿进程,
+  把 load 顶到 3.56 导致 SSH 断连;修法 = 环形缓冲 + `PR_SET_PDEATHSIG` + 自旋超时。
+  ② SysV 信号量带 `SEM_UNDO` 时,每进程补偿表上限 32767 条(`SEMVMX`),
+  单向 20 万条必然溢出 → `semop` 返回 ERANGE 静默失败。
+  ③ **对照组设计错误**:首版 `spin` 生产者看 `tail`(消费者一读就推进)、
+  `sem` 却等处理完才 post,语义不一致 → 出现「自旋比 sem 慢 2.9 倍」的自相矛盾数据。
+  修法 = 三计数器 `head`/`tclaim`/`tdone`。**数据自相矛盾就说明设计错了,别急着归因**。
+- **局限**:板上 `loadavg` 长期 ~1.0 降不下来(`tx_5v_power_present` D 状态内核线程),
+  绝对数值偏保守,但同轮内相对比较有效。
+
+### ✅ 学习线第五阶段 M2(语音:ASR + TTS + 编排网关)已上板实测(2026-10-29)
+- **ASR(识别)**:sherpa-onnx **v1.12.12 static**(shared 包需 `GLIBCXX_3.4.29`,板上只有 3.4.28 → 必须 static)
+  + **Paraformer-zh-small int8(78 MB)**,2 线程。7 条官方 test_wavs 实测 **RTF 0.023~0.025(比实时快约 40×)**,
+  含四川/天津/河南话与中英混说,识别文本全部可读。
+- **VAD 断句**:`sherpa-onnx-vad-alsa-offline-asr` + `silero_vad.onnx`(threshold 0.5 / min_silence 0.5s / min_speech 0.25s),
+  2 分钟真实环境音切出 **26 段**。
+- **TTS(合成)**:`vits-zh-fanchen-C`(116 MB),线程消融 1/2/**4**/6 → **4 线程最优 RTF 0.564**
+  (A76 只有 4 个大核,6 线程反而退到 0.679)。**闭环验证**:TTS 生成的 wav 再喂 ASR 能识别回原文,只差两个同音字。
+- **常驻 TTS 服务**:`lab/tts_daemon.cpp`(AF_UNIX,协议 `[u32 len][utf8]` → `[i32 sr][i32 n][i16 PCM]`),
+  把每次 `fork/exec` 的 **3.70 s 固定加载开销**摊掉 —— 同一句 15 字 **5.5 s → 1.8 s**。
+- **编排网关**:`lab/voice_gateway.cpp`,麦克风`hw:0,0` → VAD+ASR 子进程 → Agent 子进程 → 分句 TTS → 重采样 48k → `aplay hw:2,0`,
+  用 `pipe+dup2` 重定向、`SIGSTOP/SIGCONT` 做半双工(播报时冻 ASR 防自激)、`SIGINT/SIGTERM` 有序回收子进程。
+  启停脚本 `lab/voice_start.sh`。
+- **踩坑(板载 ES8388 三个硬约束)**:①**不支持 16 kHz**(必失败,44100/48000 才行)②**只收双声道**(单声道报
+  `Channels count non available`)③**`plughw` 插件失效** → 只能手动重采样+复制声道。
+  隐藏陷阱:**`PCM Volume` 150(−21 dB)实测完全听不到**,192(0 dB)才正常 → 极易误判成「链路不通」。
+- **明确未做(别宣称语音助手成品)**:①**无唤醒词门控**,26 段识别全是环境闲聊也照单全收
+  ②重采样原在 PC 侧,板上原生实现未收尾 ③ASR/TTS 与 Agent 已串通但**未纳入 systemd 常驻**
+  ④无外放场景的半双工验证(当前用耳机)。详见 `docs/tech_notes/VOICE_ASR_PLAN.md` **第 6 节**(含全部真机输出与口径)。
 
 ---
 
@@ -226,7 +270,7 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
 1. ~~回归测试结果回填~~ ✅ 已回填(12/12 通过,三次全绿)
 2. ~~巡检守护默认写 LED 模式用户验收~~ ✅ 已完成(占空比 49.7% 真实闪灯)
 3. ~~多步演示闭环(巡检→研判→执行→汇报)~~ ✅ 已完成(两幕 PASS,三次复跑)
-4. ASR 板端实测(按 VOICE_ASR_PLAN 评估协议)
+4. ~~ASR 板端实测(按 VOICE_ASR_PLAN 评估协议)~~ ✅ 已完成(2026-10-29:ASR RTF 0.023~0.025 / TTS 4 线程 RTF 0.564 / 常驻服务 5.5s→1.8s,见上方 M2 小节与 `BENCHMARKS.md` 2.11)
 5. NPU 竞争"仅LLM/仅YOLO"对照场景补测(当前只有混合负载采样)
 6. 把两幕演示固化成 systemd 服务(开机自启守护 + 事件触发 Agent) —— 未开始
 
@@ -312,6 +356,52 @@ RTSP / 摄像头输入(当前只吃视频文件)/ 30fps(实际 24~27,是原速�
 
 ---
 
+## 2026-10-28 巡检守护运行态外化(修 Agent「什么时候报警闪烁」答错)
+
+**问题**:问端侧 Agent「什么时候报警闪烁」,它答「只有超过 75°C 才会报警,当前 44.4°C 远低于该阈值,LED 常亮」——
+同时出现了「20°C 阈值」和「75°C 才报警」两个互相否定的数字。
+上板实测真相:**守护进程当时根本没在运行**,灯是上次异常退出留下的僵尸态
+(`trigger=none` + `brightness=255`);而它历史配置用的是 `--temp-enter 20`,并不是 75。
+「常亮」这个结论碰巧对,理由全错。
+
+**根因**:告警阈值是守护进程的命令行参数,**属于进程内运行时状态,除它自己没人读得到**;
+Agent 只有「历史事件日志」和「写死的默认值 75」两个来源,无法判断一条历史日志是正在生效还是三天前的。
+再加上旧版 `get_system_health` 直接返回 `status: normal_optimal`(基于 75°C 判定)这种**结论字段**,
+模型连推理都省了直接抄。
+
+**改动(5 处代码 + 1 个 systemd 单元)**:
+
+| 位置 | 改动 |
+|---|---|
+| `lab/edgevision_patrol_daemon.cpp` | 每周期原子写 `/root/patrol/patrol_state.json`(pid/running/阈值/state/led/updated_at/stale_after_s);启动时自检残留僵尸态并恢复 heartbeat;退出写 `STOPPED` |
+| `lab/rkllm_embodied_agent.cpp` | 新增工具 `get_patrol_status`(失联三条件:running + 时间戳未过期 + `kill(pid,0)==0`);删掉 `get_system_health` 的 `status` 结论字段;修复 `get_patrol_events` 丢弃 DAEMON_START 阈值的问题;重写 sys_prompt(「告警阈值 ≠ 物理过热阈值」) |
+| `lab/edgevision-patrol.service` | 纳入 systemd:`Restart=always` + `ExecStopPost` 恢复 heartbeat + `SuccessExitStatus=0 3`(单实例锁撞码不算失败) |
+| `lab/edgevision-patrol.default` | → `/etc/default/edgevision-patrol`,阈值走 `PATROL_ARGS`,验收改文件即可 |
+
+**实测(同一块板、同一问题)**:
+- 守护在跑(20°C):快照 `state=THERMAL_ALERT / led=alarm`,LED 采样 `255 0 255 0 255 0 255 0`;
+  Agent 首轮主动调 `get_patrol_status`,答「**是的,现在会触发 LED 闪烁**……虽然 49°C 在物理安全范围内,但守护阈值极低(20°C)」✅
+- 守护已停:快照 `running=false / reason=daemon_stopped`,Agent 答「现在不会自动报警,守护未运行」✅
+
+**用法**:
+```bash
+systemctl start edgevision-patrol      # 生产阈值 75/70, 间隔 5s
+systemctl status edgevision-patrol
+cat /root/patrol/patrol_state.json     # 运行态一眼可见
+# 验收演示要低阈值: 改 /etc/default/edgevision-patrol 的 PATROL_ARGS 后 restart
+```
+注意:单元已安装但**未 enable**(`systemctl is-enabled` = disabled),开机自启需手动 `systemctl enable`。
+
+**同日第二轮:LED 状态查询的采样假象**。问「查看当前警告灯状态」,Agent 答「亮度 0(关闭)」+「正常呼吸闪烁」自相矛盾。
+板上实测 `trigger=[heartbeat]` 占空比 **22%**(40 次采样亮 9 次)→ **单点读到 0 的概率约 78%**,灯在呼吸,读到的是灭相。
+改 `get_led_status`:周期模式(`heartbeat`/`alarm`/`alarm_blink`)改回 **`brightness_duty_pct`**(20×60ms=1.2s 覆盖 1.2 个心跳周期),
+静态模式(`on`/`off`)才回瞬时 `brightness`;prompt 禁止把瞬时值当开关状态、要求问「警告灯」时同时查 `get_patrol_status`。
+实测修复后:heartbeat → 「亮度占用率约 25%,正常呼吸状态」✅;爆闪 → 「已触发温度告警,LED 进入报警闪烁」✅。
+详见 TROUBLESHOOTING 第 23 条「**第二处**」——上一处只修了用户态爆闪,没覆盖内核 `heartbeat` 触发器。
+
+**入口统一**:`rkllm_embodied_agent` 已改为指向 `rkllm_embodied_agent_p0` 的**软链接**,只维护一份二进制。
+此前两个入口各自维护(`run_agent.sh` 调前者、交互会话跑后者),改完一个忘同步另一个,验证时因此跑了一次旧二进制。
+
 ## 面试材料(2026-10-25 晚):开发线收尾,转面试冲刺
 
 > 用户指令「停下来准备面试」。**从此不再开新功能**,所有精力转到「把已经做出来的东西讲清楚」。
@@ -334,7 +424,7 @@ RTSP / 摄像头输入(当前只吃视频文件)/ 30fps(实际 24~27,是原速�
 1. 官方 5.5ms vs 实测 37ms —— 同算子位置不同差 6 倍,归因不靠猜
 2. 余弦 0.9965 骗了我 —— cls 精确等于 0.5 = sigmoid(0),分类头早废了
 3. **演示全绿但 Agent 在说谎** —— 分层定位「模型幻觉 vs 感知层喂错数据」
-4. 模型不缺智商,缺常识 —— 49°C 被判成「永久损坏风险」
+4. 模型不缺智商,缺**可观测性** —— 先被判 49°C「永久损坏风险」,补 75°C 常识后又拿它去否定守护的真实告警(守护阈值 20°C)。两次都不是幻觉,是它没法知道"当前生效阈值到底是多少"
 5. **MPP 硬编走通了,但我把它从路线图划掉** —— 负结论也是结论
 
 ### 红线(绝对不能说出口)

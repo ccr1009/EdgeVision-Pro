@@ -1,0 +1,29 @@
+### spin_cost: work=20ms cap=16 (真实 NPU 节奏)
+# 生产者(摄像头)灌 100 × 248B, 消费者(NPU)每帧 20.0 ms, 环形缓冲 16 帧
+# 判据:producer_cpu_ms 越低越好;cpu_share_pct=100 表示生产者一直烧 CPU
+
+strategy	ok	blocked	producer_cpu_ms	producer_wall_ms	consumer_cpu_ms	cpu_share_pct	us_per_msg
+sem	1	1	0.27	1360.2	2000.10	0.0	13602.15
+spin	1	1	1680.10	1680.1	1999.97	100.0	16800.60
+yield	1	1	1680.10	1680.1	1999.97	100.0	16800.57
+adaptive	1	1	0.44	1360.2	2000.09	0.0	13601.92
+
+### spin_cost: work=2ms cap=16 (快消费者)
+# 生产者(摄像头)灌 200 × 248B, 消费者(NPU)每帧 2.0 ms, 环形缓冲 16 帧
+# 判据:producer_cpu_ms 越低越好;cpu_share_pct=100 表示生产者一直烧 CPU
+
+strategy	ok	blocked	producer_cpu_ms	producer_wall_ms	consumer_cpu_ms	cpu_share_pct	us_per_msg
+sem	1	1	0.60	336.4	400.38	0.2	1682.03
+spin	1	1	368.09	368.1	400.05	100.0	1840.40
+yield	1	1	368.08	368.1	400.05	100.0	1840.38
+adaptive	1	1	0.99	336.4	400.37	0.3	1681.98
+
+### spin_cost: work=20ms cap=256 (缓冲足够大,不等待)
+# 生产者(摄像头)灌 100 × 248B, 消费者(NPU)每帧 20.0 ms, 环形缓冲 256 帧
+# 判据:producer_cpu_ms 越低越好;cpu_share_pct=100 表示生产者一直烧 CPU
+
+strategy	ok	blocked	producer_cpu_ms	producer_wall_ms	consumer_cpu_ms	cpu_share_pct	us_per_msg
+sem	1	0	0.04	0.0	1999.96	239.5	0.18
+spin	1	0	0.04	0.0	1999.97	220.4	0.16
+yield	1	0	0.03	0.0	1999.97	224.2	0.15
+adaptive	1	0	0.03	0.0	1999.97	206.9	0.17

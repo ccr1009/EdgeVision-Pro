@@ -68,6 +68,13 @@ static const char* PATROL_DIR    = "/root/patrol";
 static const char* EVENT_LOG     = "/root/patrol/patrol_events.log";
 static const char* LLM_LOG       = "/root/patrol/llm_pending.jsonl";
 static const char* PATROL_LOCK_FILE = "/tmp/edgevision_patrol.lock";
+// 运行态快照: 供具身 Agent(get_patrol_status) 读取「守护是否在跑 + 当前生效阈值」。
+// 为什么必须有这个文件: 阈值是命令行参数, 只有本进程知道; 日志里的 DAEMON_START 是历史
+// 快照, 无法区分「守护正在用 20C 跑」和「三天前用 20C 跑过一轮」。Agent 曾因此把
+// 75C 默认值当成当前生效阈值, 向用户汇报了「温度远低于 75C, 不会报警」的错误结论。
+static const char* STATE_FILE   = "/root/patrol/patrol_state.json";
+// 快照超过 (interval * 该倍数) 未更新即视为守护已失联(stale), 由 Agent 侧判定
+static const int    STATE_STALE_FACTOR = 3;
 
 // ---------------- 迟滞参数表(详见 docs/tech_notes/PATROL_DAEMON_DESIGN.md) --------------
 static const long MAX_LOG_BYTES    = 5LL * 1024 * 1024; // 黑匣子 >5MB 轮转, 保留一代 .1
@@ -227,6 +234,20 @@ static std::string led_read_mode() {
     if (l != std::string::npos && r != std::string::npos && r > l)
         return trig.substr(l + 1, r - l - 1);
     return "unknown";
+}
+
+// 检测「残留死态」: 上次被 kill -9 / 崩溃时来不及恢复, 停在 trigger=none + brightness=255。
+// 物理表现是「常亮但永不呼吸」——既不是 heartbeat 也不是 alarm, 是个中间僵尸态。
+// 为什么 trigger=none 需要区分: 用户态爆闪在跑时 trigger 也是 none(本板无 timer 触发器),
+// 所以必须再查爆闪子进程是否活着, 否则会把正在报警的灯误判成残留并强行改成 heartbeat
+// ——那等于亲手把报警按掉。实测该函数误判一次就会造成「报警被静默取消」。
+static bool led_is_zombie_state() {
+    if (led_read_mode() != "none") return false;
+    std::ifstream pf(LED_ALARM_PID_FILE);
+    pid_t pid = 0;
+    if (pf.is_open()) { pf >> pid; pf.close(); }
+    if (pid > 1 && kill(pid, 0) == 0) return false; // 爆闪在跑 -> 正常报警态, 不是残留
+    return true;
 }
 
 // ---------------- 传感器采样 --------------------------------------------------
@@ -413,6 +434,56 @@ static void write_start_event(const char* mode_name, int interval_s, const std::
         std::string("{\"ts\":\"") + now_ts() + "\",\"event\":\"DAEMON_START\",\"detail\":{" + inner + "}}");
 }
 
+// ---------------- 运行态快照(Agent 可发现性的根) -------------------------------
+// Agent 侧 get_patrol_status 直接读这个文件。它解决三个原有缺陷:
+//   1. 阈值只在命令行里, Agent 无从得知实际生效值 → 只能靠猜(prompt 里写死的 75C)
+//   2. 守护崩了/被 kill -9 后, 日志里最新一条仍是「超过20C阈值, LED告警」, Agent 会
+//      把历史误当现状 → running/stale_after_s 让「守护已停」变成可判定事实
+//   3. 残留态(trigger=none + brightness=255)与「正常常亮」在 sysfs 上无法区分
+//      → led 字段如实记录守护最后落到的目标态
+// 原子性: 先写 .tmp 再 rename(同目录 rename 是原子替换), 避免 Agent 读到半截 JSON。
+// 写失败只警告: 与日志策略一致, 快照写不进去不能拖死状态机主循环。
+static std::string g_started_at; // 启动时刻, 快照原样带出便于人工核对运行时长
+
+static void write_state_snapshot(const char* mode_name, int interval_s,
+                                 const char* state, bool running,
+                                 bool temp_ok, double temp_c,
+                                 const std::string& led_applied) {
+    std::string tmp = std::string(STATE_FILE) + ".tmp";
+    {
+        std::ofstream f(tmp);
+        if (!f.is_open()) {
+            fprintf(stderr, "[%s] WARN: 打开运行态快照 %s 失败: %s\n",
+                    now_ts().c_str(), tmp.c_str(), strerror(errno));
+            return;
+        }
+        f << "{"
+          << "\"pid\":"          << (long)getpid() << ","
+          << "\"running\":"      << (running ? "true" : "false") << ","
+          << "\"mode\":\""       << mode_name << "\","
+          << "\"interval_s\":"   << interval_s << ","
+          << "\"temp_enter_c\":" << f2(g_cfg_temp_enter) << ","
+          << "\"temp_exit_c\":"  << f2(g_cfg_temp_exit) << ","
+          << "\"person_score_th\":" << f2(g_cfg_person_score) << ","
+          << "\"state\":\""      << state << "\","
+          << "\"soc_temp_c\":"   << (temp_ok ? f2(temp_c) : std::string("null")) << ","
+          << "\"led\":\""        << led_applied << "\","
+          << "\"started_at\":\"" << g_started_at << "\","
+          << "\"updated_at\":\"" << now_ts() << "\","
+          << "\"stale_after_s\":" << (interval_s * STATE_STALE_FACTOR)
+          << "}";
+        f.flush();
+        if (!f.good()) {
+            fprintf(stderr, "[%s] WARN: 写运行态快照内容失败(磁盘满?)\n", now_ts().c_str());
+        }
+    }
+    if (rename(tmp.c_str(), STATE_FILE) != 0) {
+        fprintf(stderr, "[%s] WARN: rename %s -> %s 失败: %s (快照可能过期)\n",
+                now_ts().c_str(), tmp.c_str(), STATE_FILE, strerror(errno));
+        unlink(tmp.c_str()); // 不让 .tmp 残留堆积
+    }
+}
+
 // ---------------- 状态机标签 ---------------------------------------------------
 enum PatrolState { ST_NORMAL = 0, ST_PERSON = 1, ST_THERMAL = 2 };
 static const char* state_name(int s) {
@@ -533,6 +604,7 @@ int main(int argc, char** argv) {
 
     std::string led_mode_now = "not_read(no-led/dry-run)";
     if (mode == MODE_LED) led_mode_now = led_read_mode();
+    g_started_at = now_ts();
 
     printf("[%s] edgevision_patrol_daemon start pid=%ld mode=%s interval=%ds\n",
            now_ts().c_str(), (long)getpid(), mode_name, interval_s);
@@ -543,7 +615,16 @@ int main(int argc, char** argv) {
     printf("[%s] LED trigger 当前: %s (目标文件 %s)\n",
            now_ts().c_str(), led_mode_now.c_str(), LED_TRIGGER);
 
+    // ---- 残留死态自检: 上次被 kill -9 / 崩溃会把灯留在 trigger=none + 常亮, 无人回收 ----
+    // 不修的话表现为「灯一直亮着但永不呼吸」, 既看不出正常也看不出报警, 是最难排查的一种态。
+    if (mode == MODE_LED && led_is_zombie_state()) {
+        bool ok = led_set_heartbeat();
+        printf("[%s] 检测到上次异常退出的残留态(trigger=none 且无爆闪进程), 已恢复 heartbeat [%s]\n",
+               now_ts().c_str(), ok ? "ok" : "FAILED");
+    }
+
     write_start_event(mode_name, interval_s, led_mode_now);
+    write_state_snapshot(mode_name, interval_s, "NORMAL", true, false, 0.0, "initializing");
 
     // ---- 状态机运行时变量 ----
     bool person_active  = false;
@@ -694,6 +775,10 @@ int main(int argc, char** argv) {
         printf("%s\n", hb.str().c_str());
         fflush(stdout);
 
+        // ---- 6.5 刷新运行态快照(供 Agent 的 get_patrol_status 读取) ----
+        write_state_snapshot(mode_name, interval_s, state_name(overall), true,
+                             cd.temp_ok, cd.temp_c, last_applied);
+
         // ---- 7. 睡到下一周期(200ms 步进, 信号随时打断退出) ----
         std::chrono::steady_clock::time_point deadline = tick_start + std::chrono::seconds(interval_s);
         while (!g_stop) {
@@ -709,9 +794,13 @@ int main(int argc, char** argv) {
     if (mode == MODE_LED) {
         bool ok = led_set_heartbeat();
         printf("[%s] exit: LED restore heartbeat [%s]\n", now_ts().c_str(), ok ? "ok" : "FAILED");
+        last_applied = ok ? "heartbeat" : last_applied;
     } else {
         printf("[%s] exit: %s mode, LED untouched\n", now_ts().c_str(), mode_name);
     }
+    // 退出也刷新一次快照(running=false): Agent 据此明确得知「守护已停, 不会再有自动告警」,
+    // 而不是把 updated_at 停在三分钟前当成「刚才还在正常巡检」。
+    write_state_snapshot(mode_name, interval_s, "STOPPED", false, false, 0.0, last_applied);
     printf("[%s] patrol daemon exit\n", now_ts().c_str());
     return 0;
 }

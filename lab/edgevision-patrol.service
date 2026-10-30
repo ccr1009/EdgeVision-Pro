@@ -1,0 +1,27 @@
+[Unit]
+Description=EdgeVision Patrol Daemon (thermal/person alert + LED alarm)
+Documentation=file:///root/lab/edgevision_patrol_daemon.cpp
+# 视觉数据来自 edgevision.service 的 9000 端口, 必须在其之后启动;
+# Wants 而非 Requires: 视觉网关挂了巡检仍应继续跑温度维度(视觉项会自然降级为 offline)
+After=edgevision.service
+Wants=edgevision.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/lab
+EnvironmentFile=-/etc/default/edgevision-patrol
+# 阈值走 EnvironmentFile, 不要在 unit 里写死:
+# 生产用 75/70, 验收演示用 20/18, 改 /etc/default/edgevision-patrol 后 restart 即可
+ExecStart=/root/lab/edgevision_patrol_daemon $PATROL_ARGS
+# 正常退出时 daemon 自己会恢复 heartbeat; 这里再兜一道, 覆盖被 SIGTERM 打断在
+# LED 写入中途的情况。SIGKILL 走不到 ExecStopPost, 那一路由 daemon 下次启动时的
+# 残留自检(led_is_zombie_state)回收。
+ExecStopPost=/bin/sh -c 'echo heartbeat > /sys/class/leds/work/trigger 2>/dev/null || true'
+Restart=always
+RestartSec=5
+# 单实例锁: 万一手动也起了一个, systemd 重启时会撞锁拿退出码 3,
+# 这种"已有实例在跑"不算失败, 否则会无限重启风暴
+SuccessExitStatus=0 3
+
+[Install]
+WantedBy=multi-user.target
