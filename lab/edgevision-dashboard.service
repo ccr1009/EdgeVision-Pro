@@ -6,12 +6,24 @@ After=network.target
 [Service]
 Type=simple
 # 用户手动跑的原命令（保持完全一致，只是交给 systemd 托管）：
-#   cd /root/edgevision && ./deploy/cpp/build_release/edgevision_dashboard --cam /dev/video83 --port 8090
+#   cd /root/edgevision && ./deploy/cpp/build_release/edgevision_dashboard --port 8090
+#
+# ⚠️ 2026-11-02 修正：这里原本写的是 `--cam /dev/video83`，是错的，已去掉。
+# 三个理由：
+#   ① `CURRENT_STATUS.md` 的「明确未实现」里写着「摄像头输入(当前只吃视频文件)」——
+#      看板的验收数字（24~27 fps / 单帧 p50 38.90 ms / 每帧 4~11 辆真车）全部是在
+#      **mp4 循环模式**下测的，见 `BENCHMARKS.md` 2.10 与 `CURRENT_STATUS.md` 第 350 节。
+#   ② `/dev/video83` 是 stereo3d 的**右目**（`stereo3d/include/stereo_types.h:85`），
+#      用 --cam 启动会和双目抢设备，开机自启后 stereo3d 直接打不开摄像头。
+#   ③ 三份文档都说「看板不占摄像头，可与 8080/9000 同跑」（根 `AGENTS.md`、
+#      `CURRENT_STATUS.md`、根 `README.md` 端口表）——只有不带 --cam 才成立。
+# 不带 --cam 时，程序走默认 `data/videos/highway_traffic.mp4` 循环
+# （`edgevision_dashboard_main.cpp:417`），板端已确认该文件存在（11.8 MB）。
 WorkingDirectory=/root/edgevision
-ExecStart=/root/edgevision/deploy/cpp/build_release/edgevision_dashboard --cam /dev/video83 --port 8090
+ExecStart=/root/edgevision/deploy/cpp/build_release/edgevision_dashboard --port 8090
 
 # 看板会占用 NPU 做 YOLOv8 推理。刻意**不写** Conflicts=edgevision.service：
-# 8090 用 /dev/video83、9000 用 /dev/video81，两者摄像头不冲突，
+# 不带 --cam 时 8090 只读 mp4、9000 独占 /dev/video81，两者摄像头不冲突，
 # 用户可以同时开。NPU 争用导致的 Agent 变慢由 Agent 自己在回答里提示。
 Restart=on-failure
 RestartSec=5
