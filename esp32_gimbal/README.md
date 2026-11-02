@@ -407,7 +407,7 @@ pan 指令 55 条，范围 [-82.90, 54.10]，跨度 137.00°
 ### 接上 ESP32 后的一键流程
 
 ```bash
-ssh root@10.21.3.103
+ssh root@<board-ip>
 cd /root/esp32_gimbal
 bash setup_board.sh          # 装依赖 + 自检 + 核对网关 + 云台连通性
 bash setup_board.sh --run    # 上面全做 + 直接起追踪
