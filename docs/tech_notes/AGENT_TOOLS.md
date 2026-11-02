@@ -272,4 +272,4 @@ Agent 的主要价值是"研判 + 在明确指令下执行单一动作"，不是
 - 多步推理的演示设计：[`AGENT_MULTISTEP_DEMO.md`](AGENT_MULTISTEP_DEMO.md)
 - 巡检守护（快层）为什么不用 LLM：[`PATROL_DAEMON_DESIGN.md`](PATROL_DAEMON_DESIGN.md)
 - 12 条用例与故障注入：[`AGENT_TEST_PLAN.md`](AGENT_TEST_PLAN.md)
-- 代码：`lab/rkllm_embodied_agent.cpp`（工具 schema 在第 1181~1260 行）
+- 代码：`lab/agent/rkllm_embodied_agent.cpp`（工具 schema 在第 1181~1260 行）

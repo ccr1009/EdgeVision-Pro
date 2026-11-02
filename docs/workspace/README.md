@@ -109,9 +109,9 @@ CMake 已默认 `Release` + `-O3 -DNDEBUG`，并在缺 `-O` 时打印 `WARNING` 
 
 | 端口 | 子系统 | 启动方式 | 说明 |
 |---|---|---|---|
-| 8080 | 实时检测预览 | `lab/w4_edgevision_preview_real.cpp` → 板端 `edgevision_preview_real` | MJPEG + 真实检测框 + 3D 棱边 + BEV 小地图 |
+| 8080 | 实时检测预览 | `lab/vision/w4_edgevision_preview_real.cpp` → 板端 `edgevision_preview_real` | MJPEG + 真实检测框 + 3D 棱边 + BEV 小地图 |
 | 8081 | 双目 stereo3d | `stereo3d/build/stereo3d_demo` | 2×2 拼图（原图/矫正/视差/深度） |
-| 8088 | Agent RPC 控制面 | `lab/edgevision_agent_server.cpp` | `/api/status` `/api/led` `/api/vision` |
+| 8088 | Agent RPC 控制面 | `lab/agent/edgevision_agent_server.cpp` | `/api/status` `/api/led` `/api/vision` |
 | 8090 | 车载 3D 看板 | `deploy/cpp` target `edgevision_dashboard` | 板端循环读 mp4 → 浏览器活流 |
 | 9000 | TCP 推流网关 | `systemd: edgevision.service` | 248 字节定长帧（8B header + 10×24B BBox） |
 

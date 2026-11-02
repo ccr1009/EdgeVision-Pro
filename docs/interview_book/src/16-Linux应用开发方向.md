@@ -315,7 +315,7 @@ int overall = person_active ? ST_PERSON
 
 机理值得背下来：管道是引用计数资源，读端要等到**所有写端都关闭**才返回 0。`fork()` 把子进程的 fd 表整份复制，那个长寿的 `sh -c` 循环手里握着同一个写端，所以读端永远等不到 0。父进程退出不改变这件事，因为引用还在。
 
-修的位置在 `lab/edgevision_patrol_daemon.cpp` 的 `led_alarm_start()`：`fork` 之后子进程先 `setsid()`，再 `open("/dev/null", O_RDWR)` 拿一个 fd，三个 `dup2` 把 0/1/2 盖掉，最后才 `execl`。为什么是 `dup2` 到 `/dev/null` 而不是 `close`？因为子进程后面还会写（`sh` 的报错、`sleep` 的 stderr），关掉 1/2 会让它写到随机 fd 上。
+修的位置在 `lab/agent/edgevision_patrol_daemon.cpp` 的 `led_alarm_start()`：`fork` 之后子进程先 `setsid()`，再 `open("/dev/null", O_RDWR)` 拿一个 fd，三个 `dup2` 把 0/1/2 盖掉，最后才 `execl`。为什么是 `dup2` 到 `/dev/null` 而不是 `close`？因为子进程后面还会写（`sh` 的报错、`sleep` 的 stderr），关掉 1/2 会让它写到随机 fd 上。
 
 "生命周期管理"具体长什么样，就藏在这套动作里：启动先做一次幂等清场（把上一轮的 alarm 进程停掉），写 pid 文件；停止时 `kill(pid, SIGTERM)`，最多等 200 ms（20 次 10 ms），还活着就 `SIGKILL`，然后 `unlink` pid 文件；最后兜底把 trigger 和 brightness 写回安全值；`fork` 之后还用 `kill(pid, 0)` 探活。**启动有清场、停止有优雅期和兜底、任何一步失败都有退路。**
 

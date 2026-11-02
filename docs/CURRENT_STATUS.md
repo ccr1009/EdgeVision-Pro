@@ -117,11 +117,11 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
   2 分钟真实环境音切出 **26 段**。
 - **TTS(合成)**:`vits-zh-fanchen-C`(116 MB),线程消融 1/2/**4**/6 → **4 线程最优 RTF 0.564**
   (A76 只有 4 个大核,6 线程反而退到 0.679)。**闭环验证**:TTS 生成的 wav 再喂 ASR 能识别回原文,只差两个同音字。
-- **常驻 TTS 服务**:`lab/tts_daemon.cpp`(AF_UNIX,协议 `[u32 len][utf8]` → `[i32 sr][i32 n][i16 PCM]`),
+- **常驻 TTS 服务**:`lab/voice/tts_daemon.cpp`(AF_UNIX,协议 `[u32 len][utf8]` → `[i32 sr][i32 n][i16 PCM]`),
   把每次 `fork/exec` 的 **3.70 s 固定加载开销**摊掉 —— 同一句 15 字 **5.5 s → 1.8 s**。
-- **编排网关**:`lab/voice_gateway.cpp`,麦克风`hw:0,0` → VAD+ASR 子进程 → Agent 子进程 → 分句 TTS → 重采样 48k → `aplay hw:2,0`,
+- **编排网关**:`lab/voice/voice_gateway.cpp`,麦克风`hw:0,0` → VAD+ASR 子进程 → Agent 子进程 → 分句 TTS → 重采样 48k → `aplay hw:2,0`,
   用 `pipe+dup2` 重定向、`SIGSTOP/SIGCONT` 做半双工(播报时冻 ASR 防自激)、`SIGINT/SIGTERM` 有序回收子进程。
-  启停脚本 `lab/voice_start.sh`。
+  启停脚本 `lab/voice/voice_start.sh`。
 - **踩坑(板载 ES8388 三个硬约束)**:①**不支持 16 kHz**(必失败,44100/48000 才行)②**只收双声道**(单声道报
   `Channels count non available`)③**`plughw` 插件失效** → 只能手动重采样+复制声道。
   隐藏陷阱:**`PCM Volume` 150(−21 dB)实测完全听不到**,192(0 dB)才正常 → 极易误判成「链路不通」。
@@ -160,7 +160,7 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
 ## 第二阶段进展(第 5~7 周):端侧推理深度剖析与模型优化 —— 核心已完成
 
 ### ✅ 1. 真实画框与后处理(所见即所得)—— 完成，且做成了网页实时预览
-- `lab/w4_edgevision_preview_real.cpp`:用新模型 + `dflfree::decode` 画**真实检测框**。
+- `lab/vision/w4_edgevision_preview_real.cpp`:用新模型 + `dflfree::decode` 画**真实检测框**。
   原来 `w4_edgevision_preview.cpp` 里那两个 "Person 96%" / "Object 91%" 是**写死的假框**，且模型跑完 `want_float=0` 拿完就 release，检测结果从未被使用。
 - 浏览器直接看:`http://<board-ip>:8080`（`/` 网页外壳、`/stream` MJPEG、`/snapshot` 单帧）
 - 预处理改为 letterbox；HUD 实时显示 `NPU xx ms + Decode xx ms + FPS + obj 数`
@@ -216,11 +216,11 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
    - 测试协议：**先 `systemctl stop edgevision` 释放 `/dev/video81`，测完必须 `start` 恢复**
    - 文档:`stereo3d/docs/{BENCHMARKS,PIPELINE,LEARNING_NEXT}.md` + `stereo3d/docs/CALIB_FORMAT.md`
 3. ✅ **第三阶段：Edge AI Agent 联动（首发通关）**：
-   - 板端 C++ 控制面 RPC 服务 `lab/edgevision_agent_server.cpp`（端口 8088）上线，提供 7 温区监控、NPU 3核负载、LED 物理灯控制、9000 端口目标检测采样三大原子硬件工具；
-   - PC 客户端 `lab/edge_agent_client.py` 成功打通，内置 ReAct 思考规划引擎（Thought -> Action -> Observation -> Final Answer），实操跑通多步自主巡检。
+   - 板端 C++ 控制面 RPC 服务 `lab/agent/edgevision_agent_server.cpp`（端口 8088）上线，提供 7 温区监控、NPU 3核负载、LED 物理灯控制、9000 端口目标检测采样三大原子硬件工具；
+   - PC 客户端 `lab/tests/edge_agent_client.py` 成功打通，内置 ReAct 思考规划引擎（Thought -> Action -> Observation -> Final Answer），实操跑通多步自主巡检。
    - **端侧大模型 RKLLM 原生推理通关（2026-10-24）**：成功部署 `rkllm-runtime v1.3.1`，加载 **Qwen3.5-2B (W8A8, 2.8GB)**，实测调用 NPU 3核与 4个 A76 大核，跑通代数与逻辑推理，系统空闲内存稳定保持 **6.1 GB**！
    - ✅ **纯端侧原生具身智能体 (On-Device Embodied Agent) 闭环首发通关（2026-10-24）**：
-     - 程序：`/root/rkllm_deploy/rkllm_embodied_agent`（源码 `lab/rkllm_embodied_agent.cpp`）；
+     - 程序：`/root/rkllm_deploy/rkllm_embodied_agent`（源码 `lab/agent/rkllm_embodied_agent.cpp`）；
      - 技术架构：无需任何 PC、云端 API 与外网，在 RK3588 单板 NPU 上完成 **大模型推理 -> 原生 Tool Calling 决策 -> 拦截调度 -> Linux sysfs 硬件交互 -> 物理数据回填 -> 终局人话汇报** 100% 本地闭环！
      - 具身能力 1 (物理硬件感知)：自然语言询问板子温度/状态，模型自主触发 `get_system_health`，实测读出 SOC: **34.23°C**、NPU: **35.15°C**、NPU负载: **65%**、可用内存: **4427MB**，并精准总结回答；
      - 具身能力 2 (物理执行器控制)：自然语言下达“把板载指示灯调成急闪报警模式”，模型自主提取参数 `mode="alarm"` 并写入 `/sys/class/leds/work/` 驱动节点，板载 LED 进入 100ms 爆闪；下达“恢复正常心跳”，模型自主调用 `mode="heartbeat"` 恢复呼吸闪烁！
@@ -236,20 +236,20 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
 ## 第三阶段可靠性强化(2026-10-24 晚):P0 修复 + 回归测试 + 巡检守护 + ASR 选型
 
 ### ✅ P0 工具层可靠性修复 —— 完成
-- 新版 Agent:`/root/rkllm_deploy/rkllm_embodied_agent_p0`(源码 `lab/rkllm_embodied_agent.cpp`,板上副本 md5 ed9e2ec6ef7a7e5d13062513fce16c64,原文件保留未动)
+- 新版 Agent:`/root/rkllm_deploy/rkllm_embodied_agent_p0`(源码 `lab/agent/rkllm_embodied_agent.cpp`,板上副本 md5 ed9e2ec6ef7a7e5d13062513fce16c64,原文件保留未动)
 - 修复四件事:
   1. `control_led` 白名单(heartbeat/alarm/on/off),非法值不碰 sysfs 直接报 `invalid_mode`;每步写检查+回读比对(`readback_mismatch`)
   2. **alarm 假成功根因**:板内核 5.10.110 没编 `CONFIG_LEDS_TRIGGER_TIMER`,写 trigger=timer 是 EINVAL,旧代码不查返回值 → 改用户态 100ms 爆闪(fork+execl,pid 记 `/tmp/edgevision_led_alarm.pid`)
   3. `get_vision_telemetry` 收满 248B 才算成功,离线/超时/半帧/畸形分得清,双采样比 frame_id 判新鲜(`fresh` 字段),检测框带坐标
   4. 工具轮数耗尽打未完成警告,不再装作跑完
 - **连带坑**(TROUBLESHOOTING 第 20/21 条):fork 子进程继承 NPU 内存映射会钉死 NPU(`rkllm_init errno 14`),必须 fork 后立即 execl
-- 冒烟证据:`lab/p0_smoke_evidence.md` + 板上 `/root/rkllm_deploy/p0_smoke/`
+- 冒烟证据:`lab/docs/p0_smoke_evidence.md` + 板上 `/root/rkllm_deploy/p0_smoke/`
 
 ### ✅ 回归测试体系 —— 交付并全部通过
 - **板上实测 12/12 通过(100%)**，2026-10-24 22:17，含故障注入用例（`--with-faults`：临时停 edgevision 验视觉离线，finally 自动恢复 active ✔）
 - 单用例耗时 13.7~66.0s（LLM 端侧推理为主），全套 ~6.5 min；结果落 `_workbench/test_results/20261024_221738/{results.json,summary.md}`
-- `lab/agent_regression_test.py`(876 行纯标准库)：12 用例 T01~T12，支持 `--only T03,T04` 只重跑、`--out-dir` 指定结果目录；契约解析锚中文标记
-- `lab/bench_contention_sampler.py`：每秒采温区/NPU 三核/内存 → CSV（600 样本实测：zone0 中位 33.31°C，NPU 均值中位 14% / p90 63.5%，内存 4.41~6.65GB）
+- `lab/tests/agent_regression_test.py`(876 行纯标准库)：12 用例 T01~T12，支持 `--only T03,T04` 只重跑、`--out-dir` 指定结果目录；契约解析锚中文标记
+- `lab/tests/bench_contention_sampler.py`：每秒采温区/NPU 三核/内存 → CSV（600 样本实测：zone0 中位 33.31°C，NPU 均值中位 14% / p90 63.5%，内存 4.41~6.65GB）
 - `docs/tech_notes/AGENT_TEST_PLAN.md`：用例表 + 指标口径 + NPU 竞争实测流程 + 故障注入安全协议
 - **回归过程中修掉 2 个真 bug + 1 个用例缺陷**（详见 TROUBLESHOOTING 第 22 条）：
   1. 爆闪子进程继承 stdout 管道 → 命令卡死 270s（修：exec 前 0/1/2 重定向 /dev/null；270s→21s）
@@ -258,16 +258,16 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
 - 另外补了 sys_prompt 条件决策准则（原来「有人就报警否则呼吸」会跳过视觉直接控灯）
 
 ### ✅ 快慢双系统巡检守护(快层) —— 交付并完成真实闪灯验收
-- `lab/edgevision_patrol_daemon.cpp`:独立 C++17,5s 周期采温度/NPU/视觉帧,状态机 NORMAL/PERSON_ALERT/THERMAL_ALERT 带迟滞,事件写 `/root/patrol/patrol_events.log` + `llm_pending.jsonl` 供慢层 LLM 消费
+- `lab/agent/edgevision_patrol_daemon.cpp`:独立 C++17,5s 周期采温度/NPU/视觉帧,状态机 NORMAL/PERSON_ALERT/THERMAL_ALERT 带迟滞,事件写 `/root/patrol/patrol_events.log` + `llm_pending.jsonl` 供慢层 LLM 消费
 - 设计原则:**快层绝不加载 LLM**(NPU 竞争/时延/可靠性三理由)
 - **LED alarm 假成功已修**(与 Agent 同一根因):原代码写 `trigger=timer`,本板内核没编 `CONFIG_LEDS_TRIGGER_TIMER` 必返 EINVAL 且不查返回值 → 改为用户态爆闪
 - **阈值可命令行配置**:`--temp-enter/--temp-exit/--person-score` 等,默认仍是 75/70°C(不为演示写死)
 - 单实例 flock 锁,防止两个守护同时抢灯
 - **真实闪灯验收通过**(占空比判据):阈值压到 20°C 触发 THERMAL_ALERT,实测 LED 占空比 **49.7% vs heartbeat 基线 20.0%(+29.7pp)**,6s 内翻转 73 次;事件真实落盘
-- 设计文档:`docs/tech_notes/PATROL_DAEMON_DESIGN.md`;验收证据:`lab/patrol_led_evidence.md`
+- 设计文档:`docs/tech_notes/PATROL_DAEMON_DESIGN.md`;验收证据:`lab/docs/patrol_led_evidence.md`
 
 ### ✅ 多步演示闭环(两幕) —— 交付并全部 PASS
-- `lab/agent_multistep_demo.py`(纯标准库):第一幕守护真实告警闪灯 + 第二幕 Agent 一条自然语言多步研判汇报
+- `lab/tests/agent_multistep_demo.py`(纯标准库):第一幕守护真实告警闪灯 + 第二幕 Agent 一条自然语言多步研判汇报
 - 第一幕 PASS:占空比 49.7% vs 20.0%,事件日志与 `llm_pending.jsonl` 均真实落盘
 - 第二幕 PASS:端到端 **106.5s**(三次独立测量 106.5 / 112.2 / 123.9s,差异来自每轮生成 token 数不同),工具链 **4~5 个不同工具**(`get_system_health → get_patrol_events → get_led_status → control_led`,部分轮次还调了 `get_vision_telemetry`),Observation **20~29 条**全合法 JSON,未触步数上限,输出 **1315~1350 字**中文研判
   - ⚠️ 口径说明:这里是三次演示的区间值,不是单次精确值;早期本行曾写死「4 个工具 / 20 条 / 1335 字」= 仅第一次演示那次的数据
@@ -399,10 +399,10 @@ Agent 只有「历史事件日志」和「写死的默认值 75」两个来源,�
 
 | 位置 | 改动 |
 |---|---|
-| `lab/edgevision_patrol_daemon.cpp` | 每周期原子写 `/root/patrol/patrol_state.json`(pid/running/阈值/state/led/updated_at/stale_after_s);启动时自检残留僵尸态并恢复 heartbeat;退出写 `STOPPED` |
-| `lab/rkllm_embodied_agent.cpp` | 新增工具 `get_patrol_status`(失联三条件:running + 时间戳未过期 + `kill(pid,0)==0`);删掉 `get_system_health` 的 `status` 结论字段;修复 `get_patrol_events` 丢弃 DAEMON_START 阈值的问题;重写 sys_prompt(「告警阈值 ≠ 物理过热阈值」) |
-| `lab/edgevision-patrol.service` | 纳入 systemd:`Restart=always` + `ExecStopPost` 恢复 heartbeat + `SuccessExitStatus=0 3`(单实例锁撞码不算失败) |
-| `lab/edgevision-patrol.default` | → `/etc/default/edgevision-patrol`,阈值走 `PATROL_ARGS`,验收改文件即可 |
+| `lab/agent/edgevision_patrol_daemon.cpp` | 每周期原子写 `/root/patrol/patrol_state.json`(pid/running/阈值/state/led/updated_at/stale_after_s);启动时自检残留僵尸态并恢复 heartbeat;退出写 `STOPPED` |
+| `lab/agent/rkllm_embodied_agent.cpp` | 新增工具 `get_patrol_status`(失联三条件:running + 时间戳未过期 + `kill(pid,0)==0`);删掉 `get_system_health` 的 `status` 结论字段;修复 `get_patrol_events` 丢弃 DAEMON_START 阈值的问题;重写 sys_prompt(「告警阈值 ≠ 物理过热阈值」) |
+| `lab/services/edgevision-patrol.service` | 纳入 systemd:`Restart=always` + `ExecStopPost` 恢复 heartbeat + `SuccessExitStatus=0 3`(单实例锁撞码不算失败) |
+| `lab/services/edgevision-patrol.default` | → `/etc/default/edgevision-patrol`,阈值走 `PATROL_ARGS`,验收改文件即可 |
 
 **实测(同一块板、同一问题)**:
 - 守护在跑(20°C):快照 `state=THERMAL_ALERT / led=alarm`,LED 采样 `255 0 255 0 255 0 255 0`;

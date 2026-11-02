@@ -3,8 +3,8 @@
 > 目标：一条自然语言指令跑完「**巡检 → 研判 → 执行 → 汇报**」，
 > 且每一步都有**可复现的真实证据**，不靠嘴讲。
 >
-> 相关代码：`lab/agent_multistep_demo.py`（编排器）、
-> `lab/edgevision_patrol_daemon.cpp`（快层守护）、`lab/rkllm_embodied_agent.cpp`（慢层 Agent）
+> 相关代码：`lab/tests/agent_multistep_demo.py`（编排器）、
+> `lab/agent/edgevision_patrol_daemon.cpp`（快层守护）、`lab/agent/rkllm_embodied_agent.cpp`（慢层 Agent）
 > 实测报告：`_workbench/test_results/demo_<时间戳>/demo_report.md`
 
 ---
@@ -231,16 +231,16 @@ export EDGEVISION_BOARD_HOST=<board-ip>    # Windows: set EDGEVISION_BOARD_HOST=
 
 ```bash
 # 完整两幕（结束后自动停守护 + LED 回 heartbeat）
-python lab/agent_multistep_demo.py
+python lab/tests/agent_multistep_demo.py
 
 # 只跑第一幕
-python lab/agent_multistep_demo.py --act1-only
+python lab/tests/agent_multistep_demo.py --act1-only
 
 # 只跑第二幕（需要板上已有守护事件可读）
-python lab/agent_multistep_demo.py --act2-only
+python lab/tests/agent_multistep_demo.py --act2-only
 
 # 保持守护运行，方便人工盯着看灯
-python lab/agent_multistep_demo.py --keep-daemon
+python lab/tests/agent_multistep_demo.py --keep-daemon
 ```
 
 **现场恢复是一等公民**：无论成功失败、异常还是 Ctrl-C，`finally` 里都会

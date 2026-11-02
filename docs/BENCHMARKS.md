@@ -541,9 +541,9 @@ v4l2-ctl -d /dev/video81 --get-parm
 
 | 文件 | 行号 | 设了什么 |
 | :--- | :--- | :--- |
-| `lab/w4_edgevision_gateway.cpp` | 133-134 | 只设 FOURCC + 分辨率 |
-| `lab/w4_edgevision_preview_real.cpp` | 259-260 | 只设 FOURCC + 分辨率 |
-| `lab/bench_cam_fps.cpp` | 11-13 | 只设 FOURCC + 分辨率 |
+| `lab/vision/w4_edgevision_gateway.cpp` | 133-134 | 只设 FOURCC + 分辨率 |
+| `lab/vision/w4_edgevision_preview_real.cpp` | 259-260 | 只设 FOURCC + 分辨率 |
+| `lab/drafts/bench_cam_fps.cpp` | 11-13 | 只设 FOURCC + 分辨率 |
 
 `bench_cam_fps.cpp:15` 的 `printf("驱动报告的 FPS")` 读的是**协商后的当前值 20**，
 不是能力上限——这一行是误读的源头。
@@ -1220,7 +1220,7 @@ EDGEVISION_BOARD_HOST=<board-ip> python scripts/verify_bev_dashboard.py \
 | 方式 | 15 字一句 | 拆解 |
 |---|---:|---|
 | `fork/exec` 一次性进程 | **≈ 5.5 s** | 3.70 s 加载 + 1.8 s 合成 |
-| `lab/tts_daemon.cpp` 常驻（AF_UNIX） | **≈ 1.8 s** | 只剩合成时间 |
+| `lab/voice/tts_daemon.cpp` 常驻（AF_UNIX） | **≈ 1.8 s** | 只剩合成时间 |
 
 **3.70 s 是与文本长度无关的纯 CPU 开销（热页缓存下同样 3.70 s，不是磁盘 IO）** →
 常驻化收益 **3.06×**。`voice_gateway.cpp` 优先走 daemon，不可用时才降级回 `fork/exec`。
@@ -1325,4 +1325,4 @@ EDGEVISION_BOARD_HOST=<board-ip> python scripts/verify_bev_dashboard.py \
    RTF 0.023 与 0.564 的**量级结论可信**（与实时差 40× / 差 1.8×），但**精确到小数点后的比较不可信**。
 
 **复现**：见 `docs/tech_notes/VOICE_ASR_PLAN.md` 第 6 节（含全部命令与真机输出）。
-代码：`lab/tts_daemon.cpp`（常驻 TTS）、`lab/voice_gateway.cpp`（编排网关）、`lab/voice_start.sh`（启停）。
+代码：`lab/voice/tts_daemon.cpp`（常驻 TTS）、`lab/voice/voice_gateway.cpp`（编排网关）、`lab/voice/voice_start.sh`（启停）。

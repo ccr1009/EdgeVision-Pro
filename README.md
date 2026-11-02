@@ -33,7 +33,7 @@
 >   验收脚本 [`scripts/verify_bev_dashboard.py`](scripts/verify_bev_dashboard.py) 6 项全绿（含 271 帧 271 个不同 crc32）。
 >   *不抢摄像头，可与 8080 / 9000 同时跑。证据图 `docs/images/bev_dashboard_live_720p.jpg`。*
 > - **板端实时 Web 流媒体（摄像头）**：板端运行 `lab/w4_edgevision_preview_real`，浏览器访问 `http://<板子IP>:8080` 实时查看 DFL-Free INT8 真实检测画面与遥测 HUD。
-> - **TCP 9000 边缘推流网关**：板端守护进程直推 248 字节结构体，PC 运行 [`lab/pc_client_viewer.py`](lab/pc_client_viewer.py) 实时跨机解析呈现（实测连续 800+ 帧稳态 19.2 FPS）。
+> - **TCP 9000 边缘推流网关**：板端守护进程直推 248 字节结构体，PC 运行 [`lab/tests/pc_client_viewer.py`](lab/tests/pc_client_viewer.py) 实时跨机解析呈现（实测连续 800+ 帧稳态 19.2 FPS）。
 > - *注：[`demo/`](demo/) 为早期免硬件环境的 PC 离线看板素材；开发板全链路实测性能以本文「板端实测基准」一节为准。*
 
 
@@ -289,14 +289,14 @@ cd /root/rkllm_deploy
 
 ```bash
 export EDGEVISION_BOARD_HOST=<board-ip>     # Windows: set EDGEVISION_BOARD_HOST=<board-ip>
-python lab/agent_regression_test.py --with-faults --timeout 240 --out-dir _workbench/test_results
+python lab/tests/agent_regression_test.py --with-faults --timeout 240 --out-dir _workbench/test_results
 # 12 用例，含故障注入；--only T03 只跑指定用例；--list 列出全部用例
 ```
 
 ### 4. 两幕多步演示（守护真闪灯 + Agent 研判汇报）
 
 ```bash
-python lab/agent_multistep_demo.py --out-dir _workbench/test_results
+python lab/tests/agent_multistep_demo.py --out-dir _workbench/test_results
 ```
 
 ---

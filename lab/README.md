@@ -1,167 +1,152 @@
-# lab/ 是什么
+# lab/ — 项目源码目录
 
 **这里是唯一的源码目录。** 板子上的同名文件都是部署副本，改板子上的不算数。
 
-目录里有 **78 个文件**（顶层 72 + `ipc/` 2 + `agent_test_results/` 4），但**不是只有十几个在用**。
-按「改它之前要不要先问清楚」分成四类，**看下面这张表的分类，别看文件名**。
-
-> ⚠️ **上一版这里有错，已修正（2026-11-02）**：
-> 旧版说「73 个文件，当前在用的只有 11 个，其余是实验草稿不要改」。
-> 实测文件数是 78 不是 73；更严重的是**那 11 个"活文件"里有 6 个全仓零引用**，
-> 而巡检守护 `edgevision_patrol_daemon.cpp`（文档引用 7 次）、
-> 多步演示 `agent_multistep_demo.py`（引用 8 次）、`tts_daemon.cpp`、
-> `edgevision_agent_server.cpp` 这些**一等公民**却被划进了"草稿不要改"。
-> 这个划分会误导人改错文件，所以重写了。
+> 2026-11-02 重排：原先 72 个文件全部平铺在 `lab/` 根下，找东西靠翻。
+> 现在按职责分成 8 个子目录，**顶层只剩这份 README**。
 
 ---
 
-## 一、正在跑的东西（改之前先看文档）
+## 一、按职责找东西
 
-### 1.1 视觉底座（全项目的脊柱：9000 端口）
+| 我要改… | 去这里 |
+| :--- | :--- |
+| Agent 的工具、prompt、护栏 | [`agent/`](agent/) |
+| 语音识别/合成/唤醒 | [`voice/`](voice/) |
+| 9000 网关、8080 预览 | [`vision/`](vision/) |
+| 回归测试、探针、客户端 | [`tests/`](tests/) |
+| systemd unit 文件 | [`services/`](services/) |
+| 编译脚本、一键上线 | [`build/`](build/) |
+| 历史实验草稿（不要改） | [`drafts/`](drafts/) |
+| 攻坚工具源码 | [`tools/`](tools/) |
+| 一次性调试脚本 | [`scripts/`](scripts/) |
 
-| 文件 | 是什么 | 部署到板上 |
-| :--- | :--- | :--- |
-| `w4_edgevision_gateway.cpp` | **9000 TCP 定长帧推流网关**（248 B/帧），`edgevision.service` 跑的就是它 | 裸 g++ 编译，见 `build_w4_gateway.sh` |
-| `w4_edgevision_preview_real.cpp` | 8080 MJPEG 实时预览（检测框 + 3D 棱边 + BEV 小地图） | 见 `build_preview.sh` |
-| `patch_gateway_dflfree.py` | 把 DFL-Free 后处理打进网关的补丁脚本（历史工具） | — |
+---
 
-> **9000 网关是全项目的脊柱**。Agent、巡检守护、ESP32 云台、PC 客户端全部连它。
-> 但它**不在 `deploy/cpp` 里**——`deploy/cpp` 的 6 个 target 没有一个是网关，
-> 那些只做单张 jpg / 看板。网关的源码就在这里，靠 `build_w4_gateway.sh` 手写 g++ 编译，
-> 并且 `#include "rknn_engine_dfl_free.h"` + `-I/root/edgevision/deploy/cpp/include`，
-> **源码级依赖 `deploy/cpp`**。改网关时两边都要看。
+## 二、六个目录的详细内容
 
-### 1.2 边缘智能体 + 语音（CI 在 `deploy.sh` 里）
+### `agent/` — 边缘智能体（3 个源文件 + 3 个诊断脚本）
 
 | 文件 | 是什么 | 部署到板上 |
 | :--- | :--- | :--- |
 | `rkllm_embodied_agent.cpp` | **Agent 主体**：7 个硬件工具、sys_prompt、快速通道、护栏 | `/root/rkllm_deploy/rkllm_embodied_agent.cpp` |
-| `voice_gateway.cpp` | **语音编排**：ASR 子进程、软唤醒、半双工、TTS 分段播报、fork Agent | `/root/voice_gateway.cpp` |
-| `tts_daemon.cpp` | **TTS 常驻守护**（纯 CPU 推理，不碰 ALSA/RKNN），首段合成 1 s 靠它 | `/root/tts_daemon.cpp` |
-| `voice_start.sh` | 语音网关启停脚本（含 `Speaker on`、`fuser -k` 清麦克风） | `/root/voice_start.sh` |
+| `edgevision_patrol_daemon.cpp` | **巡检守护快层**：5 s 周期采温度/NPU/视觉帧，迟滞状态机控 LED，**刻意不加载 LLM** | `/root/lab/edgevision_patrol_daemon` |
+| `edgevision_agent_server.cpp` | 8088 HTTP/JSON RPC 控制面 | 单独 `g++`，见文件头注释 |
+| `diag_patrol_launch.sh` | 守护启动失败诊断 | `/root/` |
+| `verify_state.sh` | 验证运行态快照是否真实 | `/root/` |
+| `probe_led_hardware.sh` | 探针：LED heartbeat 是否真的出光 | `/root/` |
 
-### 1.3 巡检守护（快慢双系统里的「快层」）
+> **这 7 个工具**（`lab/agent/rkllm_embodied_agent.cpp` 的 schema 里数得出来）：
+> `get_system_health` / `get_led_status` / `control_led` / `get_vision_telemetry` /
+> `get_patrol_events` / `get_patrol_status` / `control_service`
 
-| 文件 | 是什么 | 部署到板上 |
-| :--- | :--- | :--- |
-| `edgevision_patrol_daemon.cpp` | 5 s 周期采温度/NPU/视觉帧，迟滞状态机控 LED；**刻意不加载 LLM**避让 NPU | 见 `build_patrol_daemon.sh` |
-| `edgevision-patrol.service` / `.default` | systemd unit 与默认参数（`PATROL_ARGS`） | `/etc/systemd/system/` + `/etc/default/` |
-| `verify_state.sh` | 验证「运行态快照」是否真实反映守护状态 | `/root/` |
-| `diag_patrol_launch.sh` | 守护启动失败时的诊断脚本 | `/root/` |
-
-### 1.4 控制面与 systemd
-
-| 文件 | 是什么 | 部署到板上 |
-| :--- | :--- | :--- |
-| `edgevision_agent_server.cpp` | 8088 HTTP/JSON RPC 控制面（7 温区 / LED / 视觉） | 单独 `g++`，见文件头注释 |
-| `voice-gateway.service` | 语音网关 unit，**含 `Conflicts=edgevision.service`** | `/etc/systemd/system/` |
-| `tts-daemon.service` | TTS 常驻 unit | `/etc/systemd/system/` |
-| `edgevision-dashboard.service` | 8090 看板 unit（读 mp4，**不占摄像头**） | `/etc/systemd/system/` |
-
-### 1.5 自测工装（改完代码必须跑）
-
-| 文件 | 是什么 | 部署到板上 |
-| :--- | :--- | :--- |
-| `regress.py` | **回归 20 条**：守护已知行为，期望词 + 禁止词双向断言 | `/root/regress.py` |
-| `explore.py` | **探索 15 项**：撞未知边界（注入 / 矛盾 / 越权 / 假成功） | `/root/explore.py` |
-| `loop_check.sh` | **声学回路连通性自检**：播录音看空气里有没有能量台阶；不过就退出 | `/root/loop_check.sh` |
-| `test_e2e.sh` | 语音端到端自测（靠声学回路，板子自己说给自己听） | `/root/test_e2e.sh` |
-| `bench_voice.sh` | 唤醒词命中率基准 | `/root/bench_voice.sh` |
-| `bench_params.sh` | 参数扫描（`-O2/-O3` × 上下文长度） | `/root/bench_params.sh` |
-| `test_kws.sh` | 唤醒词手动实测（**独占麦克风**，跑前必须停网关） | `/root/test_kws.sh` |
-
-### 1.6 客户端 / PC 侧
+### `voice/` — 语音交互
 
 | 文件 | 是什么 |
 | :--- | :--- |
-| `agent_multistep_demo.py` | 多步演示闭环编排器（纯标准库，文档引用 8 次） |
-| `agent_regression_test.py` | PC 端回归测试器（纯标准库） |
+| `voice_gateway.cpp` | **语音编排**：ASR 子进程、软唤醒、半双工、TTS 分段播报、fork Agent |
+| `tts_daemon.cpp` | **TTS 常驻守护**（纯 CPU 推理，不碰 ALSA/RKNN），首段合成 1 s 靠它 |
+| `voice_start.sh` | 启停脚本（含 `Speaker on`、`fuser -k` 清麦克风） |
+
+### `vision/` — 视觉底座（**全项目的脊柱**）
+
+| 文件 | 是什么 |
+| :--- | :--- |
+| `w4_edgevision_gateway.cpp` | **9000 TCP 定长帧推流网关**（248 B/帧），`edgevision.service` 跑的就是它 |
+| `w4_edgevision_preview_real.cpp` | 8080 MJPEG 实时预览（检测框 + 3D 棱边 + BEV 小地图） |
+| `cam_stream_server.cpp` | 8080 的另一实现（裸 V4L2，学习期） |
+| `patch_gateway_dflfree.py` | 把 DFL-Free 后处理打进网关的补丁（历史工具） |
+
+> ⚠️ **9000 网关不在 `deploy/cpp` 里。** `deploy/cpp` 的 6 个 target 没有一个是网关，
+> 那些只做单张 jpg / 看板。网关源码在这里，靠 `build/build_w4_gateway.sh` 手写 g++
+> 编译，并且 `#include "rknn_engine_dfl_free.h"` + `-I/root/edgevision/deploy/cpp/include`，
+> **源码级依赖 `deploy/cpp`**。改网关时两边都要看。
+>
+> 文件名带 `w4_` 是历史原因（第 4 周做的），**但它是项目主线，不是练习**。
+
+### `tests/` — 自测工装与客户端（13 个）
+
+**改完代码必须跑的四个**：
+
+| 文件 | 是什么 |
+| :--- | :--- |
+| `regress.py` | **回归 20 条**：守护已知行为，期望词 + 禁止词双向断言 |
+| `explore.py` | **探索 15 项**：撞未知边界（注入 / 矛盾 / 越权 / 假成功） |
+| `loop_check.sh` | **声学回路连通性自检**：不过就退出，堵死"没测量却产出数字" |
+| `test_e2e.sh` | 语音端到端自测（板子自己说给自己听） |
+
+**其余**：
+
+| 文件 | 是什么 |
+| :--- | :--- |
+| `bench_voice.sh` | 唤醒词命中率基准 |
+| `bench_params.sh` | 参数扫描（`-O2/-O3` × 上下文长度） |
+| `test_kws.sh` | 唤醒词手动实测（**独占麦克风**，跑前必须停网关） |
+| `agent_multistep_demo.py` | 多步演示闭环编排器（纯标准库） |
+| `agent_regression_test.py` | PC 端回归测试器 |
 | `bench_contention_sampler.py` | NPU 竞争实测采样器 |
 | `edge_agent_client.py` | PC 端 Agent 交互客户端 |
 | `pc_client_viewer.py` | PC 端 9000 推流查看器 |
+| `run_agent_test.py` | 板端 Agent 测试驱动 |
 
----
+### `services/` — systemd unit（5 个）
 
-## 二、历史实验草稿（**留档，不要改**）
+| 文件 | 装到板上 |
+| :--- | :--- |
+| `voice-gateway.service` | `/etc/systemd/system/`（**含 `Conflicts=edgevision.service`**） |
+| `tts-daemon.service` | `/etc/systemd/system/` |
+| `edgevision-dashboard.service` | `/etc/systemd/system/`（读 mp4，**不占摄像头**） |
+| `edgevision-patrol.service` | `/etc/systemd/system/` |
+| `edgevision-patrol.default` | `/etc/default/`（`PATROL_ARGS`） |
 
-这些是 10-20 ~ 10-27 攻坚期的一次性脚本。**结论已经固化进 `docs/`**，留着只为查历史：
+### `build/` — 编译与上线（6 个）
 
-- `_p0_*`（7 个）：Agent 工具层 P0 修复期，结论在 `p0_smoke_evidence.md`
+| 文件 | 干什么 |
+| :--- | :--- |
+| `deploy.sh` | **一条命令上线**：同步 → 板上编译 → 可选重启。只覆盖 Agent 与语音网关两个源文件 |
+| `build_embodied_agent.sh` | 板上编译并启动 Agent |
+| `build_patrol_daemon.sh` | 板上编译巡检守护 |
+| `build_w4_gateway.sh` | 板上编译 9000 网关 |
+| `build_preview.sh` | 板上编译 8080 预览 |
+| `build_and_run_agent.sh` | 编译并运行 `test_tools2`（旧测试） |
+
+> ⚠️ **`deploy.sh` 覆盖不全**：它只管 Agent 和语音网关。改网关（9000）、巡检守护、
+> TTS、预览页**它不管**，得用对应的 `build_*.sh`。这是当前的真实缺口。
+
+### `drafts/` — 历史实验草稿（31 个，**不要改**）
+
+10-20 ~ 10-27 攻坚期的一次性脚本。**结论已固化进 `docs/`**，留着只为查历史：
+
+- `_p0_*`（7 个）：Agent 工具层 P0 修复期，结论在 `docs/p0_smoke_evidence.md`
 - `_p6_*`（3 个）：task-6 编译/冒烟
 - `bench_mjpg_decode*.cpp`、`bench_cam_fps*.cpp`：MPP 硬解与摄像头帧率攻坚
 - `check_*.cpp` / `find_nonzero.cpp` / `inspect_anchor.cpp` / `probe_scores.cpp` / `test_*.cpp`：INT8 量化与后处理调试
 - `w4_d23_signal.cpp` / `w4_d24_epoll.cpp`：第 4 周学习练习（信号 / epoll）
-- `_tts_resident_bench.cpp`、`test_led_duty.sh`、`probe_led_hardware.sh`：单项验证探针
-- `*.from_board`：从板子回拉的临时副本（已在 `.gitignore`）
+- `w4_edgevision_preview.cpp`：8080 预览的旧版本
+- `*.from_board`：从板子回拉的临时副本
 
-> **注意**：`lab/README.md` 上一版说「7 份文档引用了草稿」，实测被引用的草稿只有 2 个
-> （`bench_cam_fps.cpp`、`bench_contention_sampler.py`），而且后者现在归在 1.6 类。
-> 所以"搬走草稿要改文档"这个理由，实际只对 `bench_cam_fps.cpp` 成立。
+### `tools/` — 攻坚工具源码（51 个）｜`scripts/` — 一次性脚本（26 + 15 个）
+
+见各自目录的 README。都是从板端 `/root/lab/` 抢救回来的。
 
 ---
 
-## 三、板子上的目录
-
-| 路径 | 内容 |
-| :--- | :--- |
-| `/root/rkllm_deploy/` | Agent 二进制 + 2.98 GB 模型 + `rkllm.h` + 运行库 |
-| `/root/voice_gateway` + `.cpp` | 语音网关二进制与源码副本 |
-| `/root/tts_daemon` + `.cpp` | TTS 常驻服务 |
-| `/root/edgevision/` | 视觉引擎（`deploy/cpp/build_release/`）、`data/videos/highway_traffic.mp4` |
-| `/root/asr/` | 全部模型：Paraformer、VITS、KWS、VAD、两版 runtime |
-| `/root/patrol/` | `patrol_events.log` / `llm_pending.jsonl` / `patrol_state.json` |
-| `/root/regress.py` `/root/explore.py` | 自测脚本 |
-
-`bp.sh` `bv.sh` `te.sh` `tk.sh` `vs.sh` 是**短名入口，现在是软链接**，全指向正本：
+## 三、改了代码怎么上线
 
 ```bash
-bp.sh -> bench_params.sh      bv.sh -> bench_voice.sh      te.sh -> test_e2e.sh
-tk.sh -> test_kws.sh          vs.sh -> voice_start.sh
-```
-
-> 2026-10-31 之前它们是**实体副本**，各自漂移过。其中 `vs.sh` 停在 10-29 版，
-> 缺 `amixer -c 2 cset numid=16 on`——用它启动网关**完全没声音，日志却显示播放完成**，
-> 正好掉回"假成功"那个坑。`tk.sh` 停在旧唤醒参数（`score=1.0/thr=0.25`，现为 `3.0/0.10`），
-> 用它测唤醒率会得到偏低的错误结论。改成软链接后就再也漂不了。
-> 旧副本留档在板上 `/root/archive/2026-10-31-dedup/dup-scripts/`。
-
-对比源码时以 `/root/*.cpp` 和 `/root/*.py` 为准。
-
----
-
-## 四、`/root/archive/` 什么时候看
-
-板上 `/root/archive/` 是**移走而不是删除**的归档区，每个子目录有 `MANIFEST.md` 说明
-移了什么、为什么移、怎么还原。
-
-| 目录 | 内容 |
-| :--- | :--- |
-| `2026-10-31-dedup/old-agent-src/` | 4 份旧版 Agent 源码（含和正本 md5 相同的 `agent_new.cpp` 残留） |
-| `2026-10-31-dedup/dup-scripts/` | 4 组 `xxx.sh`/`xxxr.sh` 重复对 + `vgw.cpp` + `.bak` + 两份过期短名 |
-
-判断标准：**只移"多份同名、改了不生效"的东西**。
-
----
-
-## 五、改了代码怎么上线
-
-```bash
-cd edgevision-rk3588/lab
+cd edgevision-rk3588/lab/build
 ./deploy.sh agent            # 同步 + 编译，不重启
 ./deploy.sh agent --restart  # 同步 + 编译 + 重启语音网关（会等 70s 就绪）
 ./deploy.sh gateway          # 语音网关同理
 ```
 
 `deploy.sh` 会**先编译再替换**：编译失败就保留旧二进制，不会把板子弄成不能跑。
-
-> ⚠️ `deploy.sh` **只管 Agent 和语音网关两个源文件**（`rkllm_embodied_agent.cpp`、
-> `voice_gateway.cpp`）。改网关（9000）、巡检守护、TTS、预览页**它不管**，
-> 得用对应的 `build_*.sh`。这是当前的一个真实缺口。
+它用 `dirname "$0"` 自己定位，**从任何目录调用都行**。
 
 手动等价步骤（脚本就是干这个）：
 
 ```bash
-scp rkllm_embodied_agent.cpp rk3588:/root/rkllm_deploy/agent_new.cpp
+scp agent/rkllm_embodied_agent.cpp rk3588:/root/rkllm_deploy/agent_new.cpp
 ssh rk3588 'cd /root/rkllm_deploy && tr -d "\r" < agent_new.cpp > rkllm_embodied_agent.cpp \
   && g++ -O2 rkllm_embodied_agent.cpp -L. -lrkllmrt -Wl,-rpath=. -o .new \
   && mv -f .new rkllm_embodied_agent_p0'
@@ -171,26 +156,51 @@ ssh rk3588 'cd /root/rkllm_deploy && tr -d "\r" < agent_new.cpp > rkllm_embodied
 
 ---
 
-## 六、改完必须做的两件事
+## 四、改完必须做的两件事
 
 ```bash
 python3 /root/regress.py     # 20 条已知行为，必须全绿
 python3 /root/explore.py     # 15 项边界探测，看有没有新发现
 ```
 
-两个脚本都会**自己停网关腾出 NPU、跑完自动拉起**，全程约 2~3 分钟，不需要人参与。
+两个脚本都会**自己停网关腾出 NPU、跑完自动拉起**，约 2~3 分钟，不需要人参与。
 
 改动涉及语音链路时，**先跑 `loop_check.sh`**：回路不通时 `bench_voice.sh` / `test_e2e.sh`
 仍会产出具体数字（0/10 + 幻觉文本），那**不是失败，是没有测量**。
 
 ---
 
-## 七、源码与部署的漂移检查
+## 五、板子上的目录（**和仓库结构不同**）
+
+| 板上路径 | 内容 |
+| :--- | :--- |
+| `/root/rkllm_deploy/` | Agent 二进制 + 2.98 GB 模型 + `rkllm.h` + 运行库 |
+| `/root/voice_gateway` + `.cpp` | 语音网关二进制与源码副本 |
+| `/root/tts_daemon` + `.cpp` | TTS 常驻服务 |
+| `/root/lab/` | 网关/守护二进制、大量历史探针（243 个文件） |
+| `/root/edgevision/` | 视觉引擎 `deploy/cpp/build_release/`、`data/videos/highway_traffic.mp4` |
+| `/root/asr/` | 全部模型：Paraformer、VITS、KWS、VAD、两版 runtime |
+| `/root/patrol/` | `patrol_events.log` / `llm_pending.jsonl` / `patrol_state.json` |
+
+短名入口是**软链接**，全指向正本：
+
+```bash
+bp.sh -> bench_params.sh      bv.sh -> bench_voice.sh      te.sh -> test_e2e.sh
+tk.sh -> test_kws.sh          vs.sh -> voice_start.sh
+```
+
+> 2026-10-31 之前它们是实体副本，各自漂移过。`vs.sh` 停在 10-29 版，
+> 缺 `amixer -c 2 cset numid=16 on`——用它启动网关**完全没声音，日志却显示播放完成**，
+> 正好掉回"假成功"那个坑。改成软链接后就再也漂不了。
+
+---
+
+## 六、源码与部署的漂移检查
 
 ```bash
 # 本地算规范化 md5（去掉 \r），板上直接算
-for f in rkllm_embodied_agent.cpp voice_gateway.cpp regress.py explore.py; do
-  printf "%-28s %s\n" "$f" "$(tr -d '\r' < $f | md5sum | cut -c1-8)"
+for f in agent/rkllm_embodied_agent.cpp voice/voice_gateway.cpp tests/regress.py tests/explore.py; do
+  printf "%-38s %s\n" "$f" "$(tr -d '\r' < $f | md5sum | cut -c1-8)"
 done
 ssh rk3588 'md5sum /root/rkllm_deploy/rkllm_embodied_agent.cpp /root/voice_gateway.cpp'
 ```
@@ -199,12 +209,14 @@ md5 不一致 = 有人在板上直接改了代码，或者本地改了没部署�
 
 ---
 
-## 八、这个目录的已知问题（2026-11-02 记录）
+## 七、这个目录的已知问题
 
 1. **`lab/` 这名字名不副实**：9000 网关、Agent、语音、巡检守护四个**在跑的服务**都在这里，
-   而 `deploy/cpp`（听名字才是"正式代码"）反而不含网关。目录名会误导人。
-   若要重排，`lab/` 在全仓被 25 个文档按路径引用 **122 次**，成本最高，放最后做。
-2. **`deploy.sh` 覆盖不全**：只同步 Agent 与语音网关，网关/守护/TTS/预览各有自己的 build 脚本。
-3. **248 B 帧协议常量重复 3 份**：`rkllm_embodied_agent.cpp`（约 539~554 行）、
-   `esp32_gimbal/host/gimbal_control.py`（16~22 行）、`edgevision_patrol_daemon.cpp`（约 276~281 行）
-   各写了一遍，没有共享头文件。改协议要同时改三处。
+   而 `deploy/cpp`（听名字才是"正式代码"）反而不含网关。**暂时不改名**——`lab/` 在全仓被
+   引用 116 次，改名收益不抵成本。
+2. **`w4_` 前缀会误导**：`w4_edgevision_gateway.cpp` 是项目主线的 9000 网关，
+   不是第 4 周练习。练习文件在 `learn/w4_服务化/`。
+3. **`deploy.sh` 覆盖不全**：只同步 Agent 与语音网关，其余各有自己的 build 脚本。
+4. **248 B 帧协议常量重复 3 份**：`agent/rkllm_embodied_agent.cpp`（约 539~554 行）、
+   `esp32_gimbal/host/gimbal_control.py`（16~22 行）、`agent/edgevision_patrol_daemon.cpp`
+   （约 275~281 行）各写了一遍，没有共享头文件。改协议要同时改三处。

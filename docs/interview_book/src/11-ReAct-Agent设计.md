@@ -34,7 +34,7 @@ Observation ──► 必须回填成严谨 JSON 数组 [{"soc_temp_c": 34.23, .
 
 **一句话答案：** ReAct = **Reasoning + Acting 交替**，Thought → Action → Observation 三步循环，用真实观测纠偏，而不是靠模型在脑子里推演到底。
 
-**展开讲：** 我的实现就是 `while (max_steps-- > 0)` 这个循环（`lab/rkllm_embodied_agent.cpp:813`）：① `rkllm_run` 一次，把本轮输出攒下来；② 扫输出里有没有 `<tool_call>`，有就**执行全部工具调用**并把结果合成一个 JSON 数组；③ 以 `role="tool"` 再 `rkllm_run`，把 Observation 喂回去；④ 如果这一轮输出里没有 `<tool_call>`，说明模型开始说人话了，跳出循环，那就是 Final Answer。
+**展开讲：** 我的实现就是 `while (max_steps-- > 0)` 这个循环（`lab/agent/rkllm_embodied_agent.cpp:813`）：① `rkllm_run` 一次，把本轮输出攒下来；② 扫输出里有没有 `<tool_call>`，有就**执行全部工具调用**并把结果合成一个 JSON 数组；③ 以 `role="tool"` 再 `rkllm_run`，把 Observation 喂回去；④ 如果这一轮输出里没有 `<tool_call>`，说明模型开始说人话了，跳出循环，那就是 Final Answer。
 
 要理解为什么必须这么做，把三种范式摆在一起比：
 
@@ -98,7 +98,7 @@ ReAct 的代价是**轮数**，收益是**每一轮都踩在真实数据上**。
 
 **一句话答案：** 系统提示词分四块——**角色与硬件规格、世界知识、工具使用纪律、汇报纪律**；格式的稳定性**不靠 prompt 喊话，靠 runtime 的模板解析 + 参数 schema 约束 + 代码端容错**三层兜底。
 
-**展开讲：** 我的 `sys_prompt` 是 `lab/rkllm_embodied_agent.cpp:891` 起的那一大段，结构很清楚：
+**展开讲：** 我的 `sys_prompt` 是 `lab/agent/rkllm_embodied_agent.cpp:891` 起的那一大段，结构很清楚：
 
 **第一块：角色 + 硬件规格。** 开门见山"你是一个部署在 Rockchip RK3588 边缘嵌入式计算设备上的智能具身运维 Agent"，紧接着把 8 核 ARM（4×A76 @ 2.4GHz + 4×A55 @ 1.8GHz）、NPU 3 核总峰值 6.0 TOPS、8 GB LPDDR4x、Debian 11 / kernel 5.10.110、板载 LED 路径 `/sys/class/leds/work/`、视觉服务在 9000 端口——全列出来。**为什么要把这些写进 prompt？** 因为模型不知道自己在哪台机器上，而这个信息决定了它怎么解读工具返回的数据。
 
@@ -126,11 +126,11 @@ ReAct 的代价是**轮数**，收益是**每一轮都踩在真实数据上**。
 
 **第一道：`max_steps = 5`。** 这是**防死循环的硬闸门**——LLM 完全可能反复调同一工具、或永远觉得信息不够，没上限就是无限烧 NPU。5 是实测经验值：正常巡检 3~4 步收敛（第二幕实测连续调用 4~5 个不同工具），再多就是在打转。
 
-**第二道：`stall_rounds`。** 记录每轮触发的**工具名 + 参数签名**，连续两轮签名完全相同就判"原地打转"，提前收束并打印警告（`lab/rkllm_embodied_agent.cpp:835`）。步数上限是最后一道闸，这个是提前刹车——差别在于**一个跑满 5 轮才发现，一个第二轮就停**。
+**第二道：`stall_rounds`。** 记录每轮触发的**工具名 + 参数签名**，连续两轮签名完全相同就判"原地打转"，提前收束并打印警告（`lab/agent/rkllm_embodied_agent.cpp:835`）。步数上限是最后一道闸，这个是提前刹车——差别在于**一个跑满 5 轮才发现，一个第二轮就停**。
 
 **第三道：工具自身的超时。** `get_vision_telemetry` 连 9000 端口有 `SO_RCVTIMEO`（读一帧 300 ms 超时上限），`get_patrol_events` 只回退固定字节数读日志。**任何单个工具都不允许无限期阻塞**，否则整个循环卡在一个工具里，步数闸门根本轮不到生效。
 
-**终止条件只有两个**：模型输出不带 `<tool_call>` 的自然语言（Final Answer），或者步数耗尽。耗尽时的处理是这段代码里我最在意的一处细节（`lab/rkllm_embodied_agent.cpp:846`）：
+**终止条件只有两个**：模型输出不带 `<tool_call>` 的自然语言（Final Answer），或者步数耗尽。耗尽时的处理是这段代码里我最在意的一处细节（`lab/agent/rkllm_embodied_agent.cpp:846`）：
 
 ```
 if (g_step_output.find("<tool_call>") != std::string::npos) {

@@ -65,7 +65,7 @@
 |---|---|---|
 | `deploy/cpp/include/rknn_engine_dfl_free.h` | `init / init_from_memory / run_inference(rgb,w,h,vector<Detection>&)` | **npud 唯一需要封装的接口** |
 | `deploy/cpp/src/rknn_engine_dfl_free.cpp` | 实现 + 3 核绑定 | 原样拷进 npud |
-| `lab/w4_edgevision_gateway.cpp` | 模型预加载到内存、3 worker 各建 context、有界队列、定长 248B TCP 帧 | 客户端改造对象 |
+| `lab/vision/w4_edgevision_gateway.cpp` | 模型预加载到内存、3 worker 各建 context、有界队列、定长 248B TCP 帧 | 客户端改造对象 |
 | `deploy/cpp/src/edgevision_dashboard_main.cpp` | `RKNNEngineDflFree npu` 单实例 | 客户端改造对象 |
 | `data/models/yolov8n_dflfree_rk3588_i8.rknn` | 同一个模型，两处重复加载 | 收敛到 npud 只加载一次 |
 

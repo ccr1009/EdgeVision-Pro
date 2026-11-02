@@ -74,7 +74,7 @@
 | `w3_d20_real_npu_gateway.cpp` | 网关 + 真 NPU 推理 | 从练习走向项目 |
 
 > `w3_d20_real_npu_gateway.cpp` 是 **9000 推流网关的前身**。
-> 主线版本后来演进成 `lab/w4_edgevision_gateway.cpp`（即 `edgevision.service` 跑的那个）。
+> 主线版本后来演进成 `lab/vision/w4_edgevision_gateway.cpp`（即 `edgevision.service` 跑的那个）。
 
 ### w4_服务化（第 4 周）
 
@@ -85,8 +85,8 @@
 > ⚠️ **别被文档带偏**：`CURRENT_STATUS.md` 说第 4 周做到「`daemon(0,0)` + `sigaction` 收
 > SIGINT/SIGTERM + 全链路屏蔽 SIGPIPE」。实测这个 53 行的文件里 **`sigaction` 出现 0 次、
 > `SIGPIPE` 出现 0 次**，只有 `daemon(0,0)`。
-> 信号处理那部分可能在 `lab/w4_d23_signal.cpp`（主线文件，不在这里），SIGPIPE 则是在
-> `lab/w4_edgevision_gateway.cpp` 里。**讲学习线时以文件实际内容为准。**
+> 信号处理那部分可能在 `lab/drafts/w4_d23_signal.cpp`（主线文件，不在这里），SIGPIPE 则是在
+> `lab/vision/w4_edgevision_gateway.cpp` 里。**讲学习线时以文件实际内容为准。**
 
 ---
 
@@ -105,7 +105,7 @@ g++ -O2 -std=c++17 w2_d9_race.cpp -pthread -o w2_d9_race
 g++ -O2 -std=c++17 w3_d15_server.cpp -o w3_d15_server
 ```
 
-`w3_d20_real_npu_gateway.cpp` 要额外链接 RKNN 和 OpenCV，参考 `lab/build_w4_gateway.sh` 的编译参数。
+`w3_d20_real_npu_gateway.cpp` 要额外链接 RKNN 和 OpenCV，参考 `lab/build/build_w4_gateway.sh` 的编译参数。
 
 ---
 

@@ -30,7 +30,7 @@
 | 中间版 | `099156fd37355a7a6def2d1958d67b5e` (43304B, 967 行) | 冒烟 v2 发现 C 条汇报编造成功 + D 条报告被 max_new_tokens=384 截断 |
 | 修复版 | `d2c6a41bc46f3805529704f16e1f8a50` (43537B, 980 行) | max_new_tokens 384→512 + sys_prompt 诚实条款(不许把拒绝说成成功) |
 | 回归修复版 | `7c0f8f07fee9d2d3f68845c009b96131` (44252B, 956 行) | T04/T11 根因修复: sys_prompt 幂等执行条款(显式控灯指令必须立即 control_led, 不被事件干扰改判、不因"当前已相同"跳过) |
-| **最终版本地 `lab/rkllm_embodied_agent.cpp`** | `6ec791e3a2f3d9e9bc6227531abbf2cc` (44868B, 961 行) | T08 根因修复: sys_prompt 条件实测条款(条件引用什么数据源就必须实测, 巡检历史事件不能替代实时感知) |
+| **最终版本地 `lab/agent/rkllm_embodied_agent.cpp`** | `6ec791e3a2f3d9e9bc6227531abbf2cc` (44868B, 961 行) | T08 根因修复: sys_prompt 条件实测条款(条件引用什么数据源就必须实测, 巡检历史事件不能替代实时感知) |
 | **板上 `/root/rkllm_deploy/rkllm_embodied_agent_p0_t6.cpp`** | `6ec791e3a2f3d9e9bc6227531abbf2cc` | scp 后板上实测, **与本地一致** (44868B) |
 | 板上二进制 `/root/rkllm_deploy/rkllm_embodied_agent_p0_t6` | `0ddafcb538901ba5e9d7ecfd3c7b4bc7` (95576B, 12:45:23) | 最终版编译产物, 12/12 回归所用二进制 |
 

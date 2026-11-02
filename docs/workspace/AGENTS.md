@@ -169,7 +169,7 @@ D:\a研究生\项目\rk3588项目\
     - 数据集:128 张带标注 / **929 个 GT 框 / 71 个类别**;结果 **FP32 mAP@0.5 = 0.6087,INT8 = 0.6002,绝对掉点 0.85 个百分点(−1.4%)**。
     - 局限(引用时必须一起说):COCO128 是 YOLOv8n 的**训练子集**,绝对 mAP 偏乐观,不能对外说"在 COCO val2017 上 0.61";但 FP32/INT8 用同一批图,"见过"因素两边抵消,相对掉点成立。
     - 详见 `docs/BENCHMARKS.md` **2.4 节**(含数据集来源、口径、复现命令)。
-  - ✅ **真实检测框网页预览**:`lab/w4_edgevision_preview_real.cpp` 取代原来画假框的 `w4_edgevision_preview.cpp`(旧版那两个 "Person 96%" / "Object 91%" 是硬编码装饰,且模型跑完 `want_float=0` 拿完就 release,检测结果从未被使用)。
+  - ✅ **真实检测框网页预览**:`lab/vision/w4_edgevision_preview_real.cpp` 取代原来画假框的 `w4_edgevision_preview.cpp`(旧版那两个 "Person 96%" / "Object 91%" 是硬编码装饰,且模型跑完 `want_float=0` 拿完就 release,检测结果从未被使用)。
     - HTTP 路由:`GET /` 网页外壳(深色、LIVE 指示灯、断流自动重连)、`GET /stream` MJPEG 流、`GET /snapshot` 单帧 JPEG;浏览器直接开 **`http://<板子IP>:8080`**。
     - 预处理改成 **letterbox**,HUD 实时显示 `NPU xx ms + Decode xx ms + FPS + obj 数`;离线验证工具 `deploy/cpp/bench/preview_detect.cpp`。
     - 实测 HUD:`NPU 15.1 ms + Decode 1.2 ms | 20.0 FPS`(~34ms 耗在 MJPG 解码/缩放/画图/JPEG 编码,**瓶颈已不在 NPU**)。
@@ -178,7 +178,7 @@ D:\a研究生\项目\rk3588项目\
     - 推流协议升级为 248 字节定长帧(`DetectionHeader` 8B + 10x24B `BBox`),上位机 `pc_client_viewer.py` 联动对齐 COCO 80 类解析与坐标映射。
     - 根治背压堆积缺陷:推流队列加 `size>=2` 丢旧与建联瞬间清空存量,杜绝重连 10000+ FPS 历史积压雪崩。实测上位机稳定接收 **19.2 FPS** 纯真实活流。
   - ✅ **摄像头 20fps 之谜已破(2026-10-24)**:三层排查证明**根因是代码从没设 `cap.set(CAP_PROP_FPS,30)`**,V4L2 默认协商到 20fps,**不是硬件上限**。
-    - 第 1 层:`v4l2-ctl --list-formats-ext` 显示 720p MJPG **明确支持 30fps**;第 2 层:定位三处源码(`lab/w4_edgevision_gateway.cpp:133-134`、`lab/w4_edgevision_preview_real.cpp:259-260`、`lab/bench_cam_fps.cpp:11-13`)**都只设了 FOURCC+分辨率,没有一处设帧率**;第 3 层:补一行后做请求值/回读值/实测值三方对照。
+    - 第 1 层:`v4l2-ctl --list-formats-ext` 显示 720p MJPG **明确支持 30fps**;第 2 层:定位三处源码(`lab/vision/w4_edgevision_gateway.cpp:133-134`、`lab/vision/w4_edgevision_preview_real.cpp:259-260`、`lab/drafts/bench_cam_fps.cpp:11-13`)**都只设了 FOURCC+分辨率,没有一处设帧率**;第 3 层:补一行后做请求值/回读值/实测值三方对照。
     - **实测**:cam1 `/dev/video81` + cam2 `/dev/video83` 各跑 400 帧,**33.33 ms/帧 = 30.0 fps,p95 33.50ms,零抖动**(原 50.03ms / 20.0fps)。
     - ⚠️ **第二层坑**:`cap.get(CAP_PROP_FPS)` **回读值会骗人**——请求 25fps 回读 `25.00`,实测仍 20.0fps。回读是软件期望值,不是硬件节奏。
     - **连带推翻**:BENCHMARKS 2.5.8 的「物理上限 20fps」结论已标注修正(新增 2.5.9);**MPP 硬解/硬编优化因此重新成立**——处理 34ms vs 出帧周期 33.3ms 刚好卡临界,省 11ms 才能吃下 30fps。
@@ -203,11 +203,11 @@ D:\a研究生\项目\rk3588项目\
   - **明确未实现(不要宣传)**:H.264 硬解(仍 libavcodec 软解)/ RGA CSC / DMA-BUF 零拷贝 / 目标跟踪(`#idx` 跨帧不连续)/ RTSP / 摄像头输入(当前只吃视频文件)/ 30fps(实际 24~27 = 原速 82~90%)。
   - 数据:`docs/BENCHMARKS.md` **2.10 节**(含口径声明、分段表、与单张版对照、为什么降 720p、去重实测、6 条局限、复现命令)。
 - ✅ **第三阶段正式开工(2026-10-24):Edge AI Agent 具身智能体与硬件 Tool Calling 首发通关**
-  - **板端控制面 C++ RPC 服务**:`lab/edgevision_agent_server.cpp` 原生编译并在后台监听 **8088 端口**，解耦数据面(9000推流)与控制面(8088 RPC)，暴露三大底层硬件原子工具：
+  - **板端控制面 C++ RPC 服务**:`lab/agent/edgevision_agent_server.cpp` 原生编译并在后台监听 **8088 端口**，解耦数据面(9000推流)与控制面(8088 RPC)，暴露三大底层硬件原子工具：
     - `GET /api/status`: 采集板载 7 大物理温区(`/sys/class/thermal/`)、3核 NPU 实时负载(`rknpu/load`)、系统内存；
     - `GET/POST /api/led?mode=xxx`: 物理控制板载 LED(`heartbeat`呼吸 / `alarm`100ms爆闪 / `on`常亮 / `off`常闭)；
     - `GET /api/vision`: 跨进程连接本地 9000 端口，抽取最新一帧 NPU 目标检测结构化数据(类别、置信度、坐标)。
-  - **PC 端智能体客户端**:`lab/edge_agent_client.py` 就位，定义符合大模型标准 JSON Schema 的工具说明书，内置 **ReAct 自主规划引擎(Thought -> Action -> Observation -> Final Answer)**，实测输入自然语言巡检指令，成功完成「查7温区(43.5°C) -> 查视觉(采样帧#3604检出马桶/牙刷) -> 研判无过热 -> 下发保持呼吸灯」多步自主硬件闭环！
+  - **PC 端智能体客户端**:`lab/tests/edge_agent_client.py` 就位，定义符合大模型标准 JSON Schema 的工具说明书，内置 **ReAct 自主规划引擎(Thought -> Action -> Observation -> Final Answer)**，实测输入自然语言巡检指令，成功完成「查7温区(43.5°C) -> 查视觉(采样帧#3604检出马桶/牙刷) -> 研判无过热 -> 下发保持呼吸灯」多步自主硬件闭环！
   - ✅ **端侧大模型 RKLLM 原生推理首发通关(2026-10-24)**:
     - 成功部署 `rkllm-runtime v1.3.1` 原生 C++ 推理环境并打通 NPU 3核协同与 A76 大核绑定；
     - 成功加载 **Qwen3.5-2B (W8A8 高精度量化, 2.8GB)** 端侧大模型；
@@ -218,18 +218,18 @@ D:\a研究生\项目\rk3588项目\
     - 真实硬件感知实测:自然语言问“开发板现在温度是多少”，模型在 NPU 上自主调用 `get_system_health`，C++ 拦截驱动读出 **SOC 34.23°C / NPU 35.15°C / NPU负载 65% / 可用内存 4427MB** 并流畅中文总结；
     - 真实执行器控制实测:自然语言指令“把板载指示灯调成急闪报警模式”，模型自主解析参数 `mode="alarm"` 并写入 `/sys/class/leds/work/`，板载硬件 LED 立刻以 100ms 爆闪报警；指令“恢复心跳呼吸灯”，模型自主调用 `mode="heartbeat"` 恢复呼吸闪烁！真正实现端侧「感知-决策-执行」三位一体具身闭环！
   - ✅ **具身 Agent 可靠性强化 + 回归测试全绿(2026-10-24 晚)**:
-    - **P0 工具层修复**(`lab/rkllm_embodied_agent.cpp` → 板上 `rkllm_embodied_agent_p0`,72608B):`control_led` 白名单+逐写入检查+回读比对;视觉工具收满 248B、区分离线/超时/半帧、双采样比 `frame_id` 判新鲜;工具轮数耗尽报未完成
+    - **P0 工具层修复**(`lab/agent/rkllm_embodied_agent.cpp` → 板上 `rkllm_embodied_agent_p0`,72608B):`control_led` 白名单+逐写入检查+回读比对;视觉工具收满 248B、区分离线/超时/半帧、双采样比 `frame_id` 判新鲜;工具轮数耗尽报未完成
     - **两个真实根因**(TROUBLESHOOTING 第 20~22 条):① 内核 5.10.110 无 `CONFIG_LEDS_TRIGGER_TIMER`,写 trigger=timer 是 EINVAL + 上层不验 = 假成功 → alarm 改用户态爆闪;② fork 不 exec 的子进程继承 NPU 内存映射会钉死 196MB CMA;③ 爆闪子进程继承 stdout 管道 → 命令卡死 270s,修法 = exec 前 0/1/2 重定向 `/dev/null`(修后 21s)
     - **板上回归实测 12/12 通过(100%)**,含故障注入(停 edgevision 验视觉离线 + finally 自动恢复 active ✔),单例 13.7~66.0s,全套 ~6.5min
-    - 交付:`lab/agent_regression_test.py`(12 用例,支持 `--only`/`--out-dir`)、`lab/bench_contention_sampler.py`(600 样本:zone0 中位 33.31°C / NPU 中位 14% p90 63.5% / 内存 4.41~6.65GB)、`docs/tech_notes/AGENT_TEST_PLAN.md`
-    - **快慢双系统巡检守护快层**:`lab/edgevision_patrol_daemon.cpp`(5s 周期状态机+迟滞,快层不加载 LLM),dry-run 60s 12 周期全 vision=online 无翻转;`docs/tech_notes/PATROL_DAEMON_DESIGN.md`
+    - 交付:`lab/tests/agent_regression_test.py`(12 用例,支持 `--only`/`--out-dir`)、`lab/tests/bench_contention_sampler.py`(600 样本:zone0 中位 33.31°C / NPU 中位 14% p90 63.5% / 内存 4.41~6.65GB)、`docs/tech_notes/AGENT_TEST_PLAN.md`
+    - **快慢双系统巡检守护快层**:`lab/agent/edgevision_patrol_daemon.cpp`(5s 周期状态机+迟滞,快层不加载 LLM),dry-run 60s 12 周期全 vision=online 无翻转;`docs/tech_notes/PATROL_DAEMON_DESIGN.md`
     - **ASR 选型**:`docs/tech_notes/VOICE_ASR_PLAN.md`,主选 sherpa-onnx + SenseVoice Small int8(官方中文 CER 7.81%),待板端实测
   - ✅ **巡检守护真实闪灯验收 + 多步演示闭环(2026-10-25)**:
     - **守护 LED 假成功同坑修复**:守护原用 `trigger=timer`(本板内核没编 `CONFIG_LEDS_TRIGGER_TIMER` 必 EINVAL 且不查返回值) → 改用户态 100ms 爆闪;**告警真实闪灯验收通过**,判据用**占空比**而非"有没有在闪"
       - heartbeat 本身就在闪(实测基线占空比 **20.0%~25.3%**),所以"看到亮度跳变"是无效判据 → 改测 **告警期占空比 49.7%~50.0%,抬升 +24.7~29.7pp**,6s 内翻转 73 次
       - 采样间隔必须远小于方波半周期(爆闪 100ms 亮/100ms 灭,采样取 **0.02s**;若用 0.1s 会与方波同频**混叠**,误判成常亮/常灭)
-    - **守护新增阈值可配置**(`--temp-enter/--temp-exit/--person-score` 等,默认仍 75/70°C 不为演示写死)+ 单实例 `flock` 防两个守护抢灯;证据 `lab/patrol_led_evidence.md`
-    - **多步演示闭环两幕 PASS**(`lab/agent_multistep_demo.py`,一条自然语言跑完巡检→研判→执行→汇报):第一幕守护真实告警闪灯;第二幕端到端 **106.5~112.2s**、`get_system_health → get_patrol_events → get_led_status → control_led` **4~5 个不同工具**、Observation 20 条全合法 JSON、1350 字中文研判。文档 `docs/tech_notes/AGENT_MULTISTEP_DEMO.md`
+    - **守护新增阈值可配置**(`--temp-enter/--temp-exit/--person-score` 等,默认仍 75/70°C 不为演示写死)+ 单实例 `flock` 防两个守护抢灯;证据 `lab/docs/patrol_led_evidence.md`
+    - **多步演示闭环两幕 PASS**(`lab/tests/agent_multistep_demo.py`,一条自然语言跑完巡检→研判→执行→汇报):第一幕守护真实告警闪灯;第二幕端到端 **106.5~112.2s**、`get_system_health → get_patrol_events → get_led_status → control_led` **4~5 个不同工具**、Observation 20 条全合法 JSON、1350 字中文研判。文档 `docs/tech_notes/AGENT_MULTISTEP_DEMO.md`
     - **最有价值的发现——演示判 PASS 但翻 trace 抓到真缺陷**:Agent 汇报「LED 始终熄灭…导致过热保护逻辑被抑制」,而灯**正在爆闪**。根因 `get_led_current_mode()` 单点读 `trigger` 见 `none` 就读一次 `brightness`,撞上 100ms 爆闪灭相 → **周期性物理量用瞬时单点采样定性 = 混叠误判**;`--no-led` 下模型还把 4 种模式挨个试一遍(白跑 4 轮 NPU 推理)
       - 修法:①`led_user_blink_alive()` 查爆闪 pid + `/proc/<pid>/cmdline` 含 `brightness`(排除僵尸/pid 复用)→ 直接返回 `alarm_blink`;②兜底 12×15ms 多点采样;③`--no-led` 追加 sys_prompt + 拒绝返回 `hint` → `control_led` **4 次 → 1 次**
       - **方法论(面试可讲)**:Agent 给出离谱结论时,先分层定位「模型幻觉 vs 感知层喂错数据」,再谈调 prompt。本次是**模型忠实推理了错误输入**
@@ -245,7 +245,7 @@ D:\a研究生\项目\rk3588项目\
     - **改动**:①守护每周期原子写 `/root/patrol/patrol_state.json`(`.tmp`+`rename`,含 pid/running/阈值/state/led/updated_at/stale_after_s),启动时自检残留僵尸态恢复 heartbeat,退出写 `STOPPED`;②新增工具 `get_patrol_status`,失联判定**三条件与**(running + 时间戳未过期 + `kill(pid,0)==0`;只看时间戳漏「刚死未过期」,只看 pid 漏 pid 复用);③`get_system_health` **删掉 status 结论字段**(给事实不给判断);④修 `get_patrol_events` 丢弃 DAEMON_START 阈值的问题(该行无 summary 键,旧代码把 detail 对象整条拍平);⑤重写 sys_prompt「**告警阈值 ≠ 物理过热阈值**」,阈值偏低时要把「物理温度正常」+「按守护阈值已满足报警」分开讲;⑥`edgevision-patrol.service`(Restart=always + ExecStopPost 恢复 heartbeat + `SuccessExitStatus=0 3`)+ `/etc/default/edgevision-patrol` 走 `PATROL_ARGS`
     - **实测**:守护在跑(20°C)时快照 `THERMAL_ALERT/led=alarm`、LED 采样 `255 0 255 0 255 0 255 0`,Agent 首轮主动调 `get_patrol_status` 并答「**是的,现在会触发 LED 闪烁**……虽然 49°C 在物理安全范围,但守护阈值极低(20°C)」✅;守护已停时答「现在不会自动报警,守护未运行」✅
     - **方法论**:Agent 答错先问「**它有没有可能知道正确答案**」,别先调 prompt;工具返回结论字段(`status: normal_optimal`)是反模式,结论会过期、会基于错前提;判断进程存活要「文件说在跑 + 时间戳新鲜 + pid 活着」三者与
-    - 新增 TROUBLESHOOTING **第 28 条**;证据 `lab/patrol_led_evidence.md`、`lab/verify_state.sh`、`lab/test_agent_v2.sh`
+    - 新增 TROUBLESHOOTING **第 28 条**;证据 `lab/docs/patrol_led_evidence.md`、`lab/agent/verify_state.sh`、`lab/drafts/test_agent_v2.sh`
     - **同日第二轮:LED 状态查询的采样假象(补进 TROUBLESHOOTING 第 23 条「第二处」)**。问「查看当前警告灯状态」,Agent 答「亮度 0(关闭)」+「正常呼吸闪烁」自相矛盾。实测 `trigger=[heartbeat]` 占空比 **22%**(40 次采样亮 9 次)→ 单点读到 0 概率 **78%**,灯在呼吸,读到的是灭相
       - 根因是第 23 条同一坑的**另一半**:上次只修了「用户态爆闪」(判据=查爆闪 pid 文件),**没修「内核 heartbeat 触发器」——它没有 pid 文件,判据直接落空**
       - 修法:`get_led_status` 按驱动方式分流 —— 周期模式(`heartbeat`/`alarm`/`alarm_blink`)返回 **`brightness_duty_pct`**(20×60ms=1.2s),静态模式(`on`/`off`)才回瞬时 `brightness`;prompt 禁止把瞬时值当开关、要求问「警告灯」时同查 `get_patrol_status`;另禁「超过告警阈值 = 温度超出正常范围」的混淆说法
@@ -280,7 +280,7 @@ D:\a研究生\项目\rk3588项目\
     - **处理原则（重要，以后照做）**：①假数据不删了事，**README 新增「明确未实现（不要对外宣传）」7 行表**——主动写"没做"比被问穿强；②余弦相似度那条**保留下来改造成反面教材**（「我一开始拿它当精度指标，0.9965 就 PASS 了；后来发现特征图整体相似不影响单个分支塌缩，真精度得跑 mAP」）——**自打脸的过程比漂亮数字更值钱**；③`docs/README.md` + `BEV_GATEWAY_ARCHITECTURE.md` 文首加"这是早期设计稿"声明 + 逐项对照表，不销毁设计思路。
     - **git 首次系统化入库**：此前仓库最后 commit 停在 10-18，**10-21 之后 8 天的活（DFL 图手术/量化修复/MPP 硬解/RKLLM Agent/巡检守护/回归体系/编译优化）一个都没提交**。补了 5 个 commit：`8f6b648`（88 文件 +16139/−327 主提交）、`de1dc2f`… 等，见 `git log`。
     - **purge 掉公开仓库里的机密**：仓库是 **public**，历史 commit 的 `AGENTS.md`/`CURRENT_STATUS.md`/`LEARNING_PLAN_4WEEKS.md` 里写着**板子 root 密码**与内网 IP → 两次 `git filter-branch` 改写未推送历史 + 清理 reflog 与悬空对象；终验 `git grep <板子密码> $(git rev-list main)` = CLEAN、IP CLEAN、连 `REDACTED` 占位符都清干净。已推送的 `origin/main` 经查本就不含，实际暴露面为零。
-    - **代码改用环境变量传板 IP**：`lab/{agent_multistep_demo,agent_regression_test,bench_contention_sampler}.py` 的 `--host` 默认值改为 `os.environ.get("EDGEVISION_BOARD_HOST","")` + 缺省时 `exit 2` 并提示；`lab/run_agent_test.py` 的 SSH key 也改 `EDGEVISION_SSH_KEY`。**换台机器 clone 下来不会连错板子，也不会把内网 IP 泄到公开仓库**。
+    - **代码改用环境变量传板 IP**：`lab/{agent_multistep_demo,agent_regression_test,bench_contention_sampler}.py` 的 `--host` 默认值改为 `os.environ.get("EDGEVISION_BOARD_HOST","")` + 缺省时 `exit 2` 并提示；`lab/tests/run_agent_test.py` 的 SSH key 也改 `EDGEVISION_SSH_KEY`。**换台机器 clone 下来不会连错板子，也不会把内网 IP 泄到公开仓库**。
     - **踩坑（可复用）**：`Out-File -Encoding UTF8` 会给 commit message 加 **BOM**，导致 `git log` 标题变乱码 → 必须用 `[System.Text.UTF8Encoding]::new($false)` 写文件再 `git commit -F`；`core.filemode=true` + `core.autocrlf=true` 会让 15 个文件显示"已修改"而 `diff --numstat` 全是 `0 0`（纯 mode 变化）→ `git config core.filemode false` 立刻清爽。
     - ⚠️ **剩一步没做**：`git push` 卡在凭据（本地两个 SSH key 都不被 GitHub 认可、无 gh CLI/PAT）→ 需用户自己加 deploy key 或 PAT 后 `git push origin main`（当前 ahead 10）。
   - ✅ **面试冲刺材料补齐（2026-10-25 晚，用户指令「停下来准备面试」→ 项目开发线收尾，转入面试准备）**

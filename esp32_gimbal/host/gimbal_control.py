@@ -13,7 +13,7 @@ gimbal_control.py — 云台控制律与协议解析（纯函数，无 I/O）
 
 import struct
 
-# ---------------- 9000 网关协议（与 lab/rkllm_embodied_agent.cpp 完全一致）----------------
+# ---------------- 9000 网关协议（与 lab/agent/rkllm_embodied_agent.cpp 完全一致）----------------
 MAX_BBOXES = 10
 HEADER_FMT = "<II"                       # uint32 frame_id, uint32 bbox_count
 BBOX_FMT = "<ifffff"                     # int32 class_id, float score, x, y, w, h

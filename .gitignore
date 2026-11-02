@@ -36,7 +36,14 @@ deploy/cpp/bench/_run_probe*.sh
 deploy/cpp/bench/_final_check.sh
 deploy/cpp/bench/_verify_hard_jpeg.sh
 deploy/cpp/bench/_run_bench_jpeg_encoder.sh
-# 端侧 Agent P0 修复期的一次性脚本（结论已固化进 lab/p0_smoke_evidence.md）
+# 端侧 Agent P0 修复期的一次性脚本（结论已固化进 lab/docs/p0_smoke_evidence.md）
+# 2026-11-02 目录重整：这些文件从 lab/ 顶层移到 lab/drafts/，规则同步更新。
+# 它们本来就在忽略名单里，移动后仍应保持忽略（不进公开仓库）。
+lab/drafts/_p0_*.sh
+lab/drafts/_p0_*.cpp
+lab/drafts/_p6_*.sh
+lab/drafts/_p6_*.cpp
+# 兼容旧路径（防止有人还在旧结构上操作时误提交）
 lab/_p0_*.sh
 lab/_p0_*.cpp
 lab/_p6_*.sh

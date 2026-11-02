@@ -15,7 +15,9 @@ set -uo pipefail
 HOST="${HOST:-rk3588}"
 SSH="ssh -o LogLevel=ERROR $HOST"      # 屏蔽 KEX 警告，只留有用输出
 SCP="scp -q -o LogLevel=ERROR"
-LAB="$(cd "$(dirname "$0")" && pwd)"
+# 本脚本在 lab/build/ 下，源码分在 lab/agent/ 与 lab/voice/
+# 用 dirname 反推 lab/ 根，无论从哪里调用都不受当前目录影响
+LAB="$(cd "$(dirname "$0")/.." && pwd)"
 
 TARGET="${1:-}"
 RESTART=0
@@ -23,7 +25,7 @@ RESTART=0
 
 case "$TARGET" in
   agent)
-    SRC="$LAB/rkllm_embodied_agent.cpp"
+    SRC="$LAB/agent/rkllm_embodied_agent.cpp"
     REMOTE_DIR="/root/rkllm_deploy"
     REMOTE_SRC="$REMOTE_DIR/rkllm_embodied_agent.cpp"
     BIN="$REMOTE_DIR/rkllm_embodied_agent_p0"
@@ -32,7 +34,7 @@ case "$TARGET" in
     UNIT="voice-gateway"
     ;;
   gateway)
-    SRC="$LAB/voice_gateway.cpp"
+    SRC="$LAB/voice/voice_gateway.cpp"
     REMOTE_DIR="/root"
     REMOTE_SRC="/root/voice_gateway.cpp"
     BIN="/root/voice_gateway"

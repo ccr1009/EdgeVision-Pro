@@ -49,7 +49,7 @@
 | **12/12** | Agent 回归用例全通过（含故障注入） | docs/tech_notes/AGENT_TEST_PLAN.md |
 | **106.5~112.2 s** | 一条自然语言跑完两幕演示 | AGENT_MULTISTEP_DEMO.md |
 | **4~5 个 / 20 条** | 演示中连续调用的不同工具数 / 合法 JSON Observation | 同上 |
-| **20.0% → 49.7%** | 巡检告警真实闪灯：占空比判据（+29.7pp） | lab/patrol_led_evidence.md |
+| **20.0% → 49.7%** | 巡检告警真实闪灯：占空比判据（+29.7pp） | lab/docs/patrol_led_evidence.md |
 
 **E. 系统编程（第一阶段保底）**
 

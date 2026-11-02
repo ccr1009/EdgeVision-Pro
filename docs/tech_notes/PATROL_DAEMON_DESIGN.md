@@ -1,6 +1,6 @@
 # PATROL_DAEMON_DESIGN.md — 快慢双系统巡检守护·快层设计
 
-> 交付物: `lab/edgevision_patrol_daemon.cpp`(快层本体) + `lab/build_patrol_daemon.sh`(板上编译脚本)
+> 交付物: `lab/agent/edgevision_patrol_daemon.cpp`(快层本体) + `lab/build/build_patrol_daemon.sh`(板上编译脚本)
 > 板型: EVM3588-B (RK3588, 8GB, Debian 11, kernel 5.10.110)
 > 铁律: **快层绝不加载 RKLLM / 任何模型**, 不链接 rknn_api —— 它与 9000 推流网关
 > (`edgevision.service`, 7×24, 任何情况下禁止 stop)共存, 是轻量规则反射进程。

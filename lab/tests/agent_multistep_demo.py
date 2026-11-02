@@ -34,10 +34,10 @@ RK3588 端侧具身 Agent —— 多步演示闭环编排器 (纯标准库)
 
 用法
 ----
-    python lab/agent_multistep_demo.py                 # 完整两幕演示
-    python lab/agent_multistep_demo.py --act1-only     # 只跑守护真实闪灯
-    python lab/agent_multistep_demo.py --act2-only     # 只跑 Agent 多步研判
-    python lab/agent_multistep_demo.py --keep-daemon   # 结束后不杀守护(方便人工观察)
+    python lab/tests/agent_multistep_demo.py                 # 完整两幕演示
+    python lab/tests/agent_multistep_demo.py --act1-only     # 只跑守护真实闪灯
+    python lab/tests/agent_multistep_demo.py --act2-only     # 只跑 Agent 多步研判
+    python lab/tests/agent_multistep_demo.py --keep-daemon   # 结束后不杀守护(方便人工观察)
 
 产物: <out-dir>/demo_<时间戳>/{demo_report.md, trace.json, led_samples.txt, agent_raw.txt}
 """

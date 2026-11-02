@@ -9,7 +9,7 @@
 >
 > **为什么改成这样（2026-11-02）**：本文件以前是一份 6.3 KB 的"精简副本"，
 > 试图把总纲浓缩下来。结果是**它自己会过期而没人发现**——例如它曾写着
-> "5 个硬件工具"，而 `lab/rkllm_embodied_agent.cpp` 里实际有 **7 个**
+> "5 个硬件工具"，而 `lab/agent/rkllm_embodied_agent.cpp` 里实际有 **7 个**
 > （多出 `get_patrol_status` 和 `control_service`）。同一份信息存两处，
 > 迟早有一处是错的。现在只留指路，不再复述。
 
@@ -44,7 +44,14 @@
 | 目录 | 放什么 | 关键提醒 |
 | :--- | :--- | :--- |
 | `deploy/cpp/` | 视觉引擎 CMake 工程（6 个 target） | **不含 9000 网关** |
-| `lab/` | Agent、语音、巡检守护、**9000 网关**源码 | 项目主线在这里，不是"练习" |
+| `lab/` | 项目主线源码，**按职责分 8 个子目录**，顶层只有 README | 见下方各子目录 |
+| `lab/agent/` | Agent 主体、巡检守护、8088 控制面（3 源 + 3 诊断） | 项目主线 |
+| `lab/voice/` | 语音网关、TTS 常驻、启停脚本 | 项目主线 |
+| `lab/vision/` | **9000 网关**、8080 预览 | 9000 网关是脊柱，**不在 deploy/cpp 里** |
+| `lab/tests/` | 回归/探索/声学自检/客户端（13 个） | 改完代码必须跑前 4 个 |
+| `lab/services/` | 5 个 systemd unit | 装到 `/etc/systemd/system/` |
+| `lab/build/` | 6 个编译与上线脚本 | `deploy.sh` 只覆盖 Agent 与语音网关 |
+| `lab/drafts/` | 31 个历史草稿 | **不要改**，结论已在 `docs/` |
 | `lab/tools/` | 攻坚工具/探针源码（25 个 .cpp + 25 个 .sh） | 从板端抢救回来，含 RGA **失败**尝试 |
 | `lab/scripts/` | 26 个调试脚本 + `board_root/` 15 个 | 价值低，记录排查过程 |
 | `learn/` | **第 1~4 周学习线代码（26 个）** | 与 `docs/LEARNING_PLAN_4WEEKS.md` 对应 |

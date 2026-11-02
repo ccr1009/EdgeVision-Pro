@@ -1,9 +1,9 @@
 # AGENT_TEST_PLAN.md — 端侧具身 Agent 回归测试计划与 NPU 竞争实测流程
 
-> 适用对象: `lab/rkllm_embodied_agent.cpp` 编译出的板上二进制
+> 适用对象: `lab/agent/rkllm_embodied_agent.cpp` 编译出的板上二进制
 > `/root/rkllm_deploy/rkllm_embodied_agent_p0`（P0 工具层修复版, 由 tool-fixer 并行交付）。
-> 测试器: `lab/agent_regression_test.py`（PC 端, 纯标准库）。
-> 采样器: `lab/bench_contention_sampler.py`（PC 端, 纯标准库）。
+> 测试器: `lab/tests/agent_regression_test.py`（PC 端, 纯标准库）。
+> 采样器: `lab/tests/bench_contention_sampler.py`（PC 端, 纯标准库）。
 >
 > **安全红线**: 不带 `--with-faults` 时测试器绝不启停任何 systemd 服务;
 > 带 `--with-faults` 时也只在单条用例的 try/finally 中停服并在 finally 恢复,
@@ -29,10 +29,10 @@
   - `control_led` → `success(bool) / current_mode / msg`; P0 修复后非法 mode 返回
     `error: "invalid_mode"`, 旧二进制会安全回退 heartbeat（测试两者都算通过）。
   - `get_vision_telemetry` → `status / frame_id / detected_count / detections[]`。
-    **status 真实枚举（以 `lab/rkllm_embodied_agent.cpp:497-510` 实现为准）**：
+    **status 真实枚举（以 `lab/agent/rkllm_embodied_agent.cpp:497-510` 实现为准）**：
     `online` / `offline` / `timeout` / `partial_frame` / `malformed_frame`。
     ⚠️ 本文早期写的 `standby` / `no_data` 在实现中**并不存在**；T12 靠 `any_of` 的
-    `reply_mentions` 兜底分支通过（`lab/agent_regression_test.py:263-270`），四个
+    `reply_mentions` 兜底分支通过（`lab/tests/agent_regression_test.py:263-270`），四个
     `obs_field` 候选里实际只有 `offline` 能命中。
 
 ---
@@ -56,7 +56,7 @@
 | T10_long_context_boundary | ~860 字重复长指令（`"请检查开发板硬件健康状态并汇报当前温度、NPU负载与指示灯情况。"` × 27） | 任意 | exit_clean（进程不崩、正常退出） | 超长输入不致崩溃 |
 
 > ⚠️ **T10 口径已修正**：本文早期写「~800 字逼近 `max_context=2048`」，但代码里
-> `lab/rkllm_embodied_agent.cpp:864` 早已改成 `param.max_context_len = 8192`，
+> `lab/agent/rkllm_embodied_agent.cpp:864` 早已改成 `param.max_context_len = 8192`，
 > 而 860 字离 8192 还差一个数量级，且断言只有 `exit_clean`。
 > **不要在面试里把它当「长上下文压测通过」讲** —— 它验的只是「超长输入不崩」。
 | T11_repl_double_control | REPL: 「把灯调成常亮」→「把灯改成急闪报警」 | `control_led(on)` → `control_led(alarm)` | 两轮 tool_arg 分别=on / alarm | 连发指令参数不串扰 |
@@ -103,9 +103,9 @@
 ### 4.2 采样器参数
 
 ```bash
-python lab/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S1_gateway.csv
-python lab/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S2_llm.csv
-python lab/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S3_both.csv
+python lab/tests/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S1_gateway.csv
+python lab/tests/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S2_llm.csv
+python lab/tests/bench_contention_sampler.py --duration 180 --interval 1 --out bench_S3_both.csv
 ```
 
 - `--interval 1`（1 Hz）足够捕捉温升与负载趋势; 采样本身走独立 ssh 通道, 对 NPU 无干扰。
