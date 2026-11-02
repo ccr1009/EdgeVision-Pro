@@ -1,0 +1,58 @@
+# ESP32-S3 N16R8 舵机云台执行器
+#
+# 为什么用 ESP-IDF 而不是 Arduino：
+#   ① 你的机器上已经装好 IDF v6.0.1，不用再装板级包
+#   ② LEDC 是 IDF 的原生 API，参数含义更清楚（分辨率/duty 都是显式的）
+#   ③ 这个项目方向是嵌入式 Linux / 端侧部署，IDF 的工程化（Kconfig/组件）更贴合
+
+set(ENV{IDF_TARGET} "esp32s3")
+
+# ---------------- 目标芯片 ----------------
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---------------- Flash / PSRAM（N16R8）----------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+
+# ---------------- 分区表 ----------------
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+
+# ---------------- 主频 ----------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# ---------------- 控制台串口 ----------------
+# 两路都用：
+#   • 主控制台走原生 USB-Serial-JTAG（PC 上插 USB 口即可看到，方便烧录+调试）
+#   • 同时打开 UART0 作为**第二个**控制台，供 RK3588 通过 COM 口/USB转TTL 通信
+#
+# 为什么要双路：
+#   EVM3588-B 内核没编 CONFIG_USB_ACM，板子认不出 ESP32 的原生 USB(CDC)。
+#   但板子内置了 CH341/CP210x/FTDI 驱动 —— ESP32 的 COM 口是经 CH343 转的 UART，
+#   插到板子上会出 /dev/ttyUSB0，直接能用。
+#   而开发阶段又想直接插电脑看日志 → 所以两路都开。
+#
+# ESP32-S3 UART0 引脚：GPIO43 = TX，GPIO44 = RX
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART0=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# ---------------- 日志 ----------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# ---------------- FreeRTOS tick ----------------
+# 100Hz 够用；控制循环用 vTaskDelayUntil 跑 20ms 周期
+CONFIG_FREERTOS_HZ=1000
+
+# ---------------- 关掉不需要的东西，减少干扰 ----------------
+CONFIG_BT_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=n

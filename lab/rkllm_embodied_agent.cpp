@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <csignal>
+#include <signal.h>   // sigaction (POSIX, C++ <csignal> 不保证提供)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -25,12 +26,55 @@ static std::string g_step_output;
 // --no-led 模式: 巡检守护拥有 LED 写权, Agent 降级为只读 (task-6)
 static bool g_no_led_mode = false;
 
+// 预热时抑制输出：预热只为把 system prompt 编码进 KV cache，不需要看模型回答
+static bool g_quiet = false;
+
+// SIGTERM/SIGINT → 只置标志，让主循环自然退出。
+//
+// 为什么必须有这个：rkllm 释放 NPU 那 2 GB 映射靠的是 rkllm_destroy(handle)。
+// 没有 handler 时，进程收到 SIGTERM 会被内核直接干掉，永远走不到 destroy，
+// IOVA 映射就留在驱动里 —— 表现就是"用完 kill 一下，下次启动 errno 14"，
+// 只能重启板子复位（这个坑今晚踩了三次）。
+static volatile sig_atomic_t g_stop = 0;
+static void on_term_signal(int) { g_stop = 1; }
+
+// 每轮对话里已执行过几次 control_service(start)。
+// 用途：拦住模型"顺手把别的服务也启动"的越权行为 ——
+// 实测它会把"打开看板"扩展成"看板 + 巡检守护"一起启动。
+// prompt 里写了约束但它仍会犯，所以在代码层硬拦：一轮最多启动一个服务。
+static int g_start_in_turn = 0;
+
+// 本轮是否已经在操作"服务"。用于拦住模型的语义泛化：
+// 实测说"打开车辆看板"时它会同时调 control_led(mode=heartbeat) ——
+// 因为它把"打开"理解成了"开灯"。灯控和服务控制是两件完全不同的事，
+// 一轮里既然在处理服务请求，就不该再动灯。
+static bool g_service_in_turn = false;
+
 int callback(RKLLMResult *result, void *userdata, LLMCallState state) {
     if (state == RKLLM_RUN_NORMAL) {
-        std::cout << result->text << std::flush;
+        if (!g_quiet) std::cout << result->text << std::flush;
         g_step_output += result->text;
     } else if (state == RKLLM_RUN_FINISH) {
-        std::cout << std::endl;
+        if (!g_quiet) {
+            std::cout << std::endl;
+            // 把 prefill 和 generate 分开打点。
+            // 这两个数字必须分开看：prefill 反映"读进去多快"（受 prompt 长度主导），
+            // generate 反映"吐出来多快"（受 NPU 算力和争用主导）。
+            // 混在一起说"响应变快了"会让人误以为是吞吐提升，实际上多数时候只是工作量减少。
+            const RKLLMPerfStat& p = result->perf;
+            if (p.prefill_tokens > 0 || p.generate_tokens > 0) {
+                double pf = (p.prefill_time_ms > 0.01f)
+                                ? p.prefill_tokens * 1000.0 / p.prefill_time_ms : 0.0;
+                double dg = (p.generate_time_ms > 0.01f)
+                                ? p.generate_tokens * 1000.0 / p.generate_time_ms : 0.0;
+                std::cout << "[perf] prefill " << (int)p.prefill_time_ms << " ms / "
+                          << p.prefill_tokens << " tok = " << (int)pf << " tok/s"
+                          << "  |  generate " << (int)p.generate_time_ms << " ms / "
+                          << p.generate_tokens << " tok = " << (int)dg << " tok/s"
+                          << "  |  peak " << (int)p.memory_usage_mb << " MB"
+                          << std::endl;
+            }
+        }
     }
     return 0;
 }
@@ -672,6 +716,10 @@ static std::string extract_json_field(const std::string& line, const char* key) 
     size_t p = line.find(pat);
     if (p == std::string::npos) return "";
     p += pat.size();
+    // 跳过多余空白：JSON 里常见 "key": "value"（冒号后有空格）。
+    // 不跳过的话 line[p] 是空格而不是引号，会误走下面的"数值字面量"分支，
+    // 提取出带引号的原值（"heartbeat"），导致按值分支判断全部失效。
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
     if (p < line.size() && line[p] == '"') {
         size_t e = line.find('"', p + 1);
         if (e == std::string::npos) return "";
@@ -790,6 +838,235 @@ static std::string tool_get_patrol_status() {
         ss << "巡检守护正在运行, 当前无告警, LED 应在心跳呼吸态。";
     }
     ss << "\"}]";
+    return ss.str();
+}
+
+// -------------------------------------------------------------
+// 子系统服务控制（systemctl 包装）
+// -------------------------------------------------------------
+// 执行命令并抓 stdout。只用于 systemctl 这类受控命令 ——
+// 服务名来自下方枚举白名单，不接受模型自由输入，所以不存在注入面。
+static std::string run_cmd(const std::string& cmd) {
+    std::string out;
+    FILE* f = popen(cmd.c_str(), "r");
+    if (!f) return out;
+    char buf[512];
+    while (fgets(buf, sizeof(buf), f)) out += buf;
+    pclose(f);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return out;
+}
+
+// 端口/HTTP 探针：判断"服务真的能用"，而不是"systemd 认为它在跑"。
+// 实测（2026-10-31）：NPU 内存不足时推流网关会先报 active，7 秒后才因模型加载失败退出；
+// 那一刻 is-active 仍是 active —— Agent 于是对用户说"已打开"，用户连上去什么都没有。
+static bool http_ok(const char* port, int tries) {
+    for (int i = 0; i < tries; ++i) {
+        std::string code = run_cmd(std::string("curl -s -o /dev/null -w '%{http_code}' "
+                                               "--max-time 2 http://127.0.0.1:") + port + "/ 2>/dev/null");
+        if (code == "200") return true;
+        sleep(1);
+    }
+    return false;
+}
+
+static bool port_ok(const char* port, int tries) {
+    for (int i = 0; i < tries; ++i) {
+        std::string n = run_cmd(std::string("ss -tln 2>/dev/null | grep -c ':") + port + " '");
+        if (!n.empty() && n != "0") return true;
+        sleep(1);
+    }
+    return false;
+}
+
+struct ServiceEntry { const char* alias; const char* unit; const char* desc; };
+static const ServiceEntry kServices[] = {
+    {"dashboard", "edgevision-dashboard", "车辆实时检测看板 (HTTP :8090, 摄像头 /dev/video83)"},
+    {"gateway",   "edgevision",           "TCP 推流网关 (定长帧 :9000, 摄像头 /dev/video81)"},
+    {"patrol",    "edgevision-patrol",    "巡检守护 (快层, 纯 C 循环, 不占 NPU)"},
+    {"voice",     "voice-gateway",        "语音交互网关 (本体: ASR + Agent + TTS)"},
+};
+static const int kServiceCount = (int)(sizeof(kServices) / sizeof(kServices[0]));
+
+// 板子自己的局域网 IP。工具返回里要带上，否则模型会编 "localhost" ——
+// 用户在**另一台电脑**上开浏览器，localhost 指向他自己的机器，必然打不开。
+static std::string local_ip() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    cached = run_cmd("hostname -I 2>/dev/null | awk '{print $1}'");
+    if (cached.empty()) cached = "127.0.0.1";
+    return cached;
+}
+
+// 判断"我是不是语音网关拉起的子进程"（父进程 comm 为 voice_gateway）。
+// 这个区分决定了 voice 的 start/stop 语义：
+//   在网关内 → 说的是"我自己"，stop 要延迟自杀
+//   在控制台里 → 说的是"另一个进程"，且控制台自己占着 NPU，必须先让出
+static bool in_voice_gateway() {
+    std::ifstream f("/proc/" + std::to_string((long)getppid()) + "/comm");
+    std::string comm;
+    if (!(f >> comm)) return false;
+    return comm.find("voice_gateway") != std::string::npos;
+}
+
+std::string tool_control_service(const std::string& name, const std::string& action) {
+    const ServiceEntry* svc = nullptr;
+    for (int i = 0; i < kServiceCount; ++i)
+        if (name == kServices[i].alias) { svc = &kServices[i]; break; }
+
+    if (!svc)
+        return "[{\"success\": false, \"error\": \"unknown_service\", "
+               "\"note\": \"可用服务: dashboard / gateway / patrol / voice\"}]";
+    if (action != "start" && action != "stop" && action != "status")
+        return "[{\"success\": false, \"error\": \"invalid_action\", "
+               "\"note\": \"只接受 start / stop / status\"}]";
+
+    std::stringstream ss;
+    ss << "[{\"service\": \"" << svc->alias << "\", \"unit\": \"" << svc->unit
+       << "\", \"action\": \"" << action << "\", \"description\": \"" << svc->desc << "\", ";
+
+    // ---- 自我指涉：语音网关把自己的启停当成"另一个服务"会出三种错 ----
+    // ① 在网关内说 stop：等于杀掉正在说话的自己 → 先回应，3 秒后再执行
+    // ② 在网关内说 start：它本来就在跑 → 直接说"已经在运行"
+    // ③ 在手动控制台里说 start：控制台自己占着 2 GB NPU，再起网关必定 errno 14
+    //    → 交接：本进程先退出释放 NPU，8 秒后由 systemd 拉起网关
+    //
+    // 两种启动方式都要覆盖：
+    //   systemd 托管 → systemctl stop
+    //   voice_start.sh 手动起 → systemctl 停不掉，必须 pkill
+    if (std::string(svc->alias) == "voice") {
+        const bool inside = in_voice_gateway();
+        const bool alive  = (run_cmd("systemctl is-active voice-gateway 2>&1") == "active") ||
+                            !run_cmd("pgrep -x voice_gateway 2>/dev/null").empty();
+
+        if (action == "start" && (inside || alive)) {
+            ss << "\"success\": true, \"active\": \"active\", \"already\": true, "
+               << "\"note\": \"语音助手已经在运行，不需要再启动。\"}]";
+            return ss.str();
+        }
+
+        if (action == "start" && !inside) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                setsid();                          // 脱离会话：父进程退出不影响自己
+                int dn = open("/dev/null", O_RDWR);
+                if (dn >= 0) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); if (dn > 2) close(dn); }
+                sleep(8);                          // 等本进程把 2 GB NPU 映射释放干净
+                execl("/bin/systemctl", "systemctl", "start", svc->unit, (char*)nullptr);
+                _exit(0);
+            }
+            g_stop = 1;                            // 主循环退出 → rkllm_destroy 释放 NPU
+            ss << "\"success\": true, \"active\": \"handover\", \"handover\": true, "
+               << "\"note\": \"控制权交接中：本控制台即将退出以释放 NPU，8 秒后语音助手自动启动"
+               << "(约需 70 秒就绪，之后直接喊「小瑞」)。\"}]";
+            return ss.str();
+        }
+
+        if (action == "stop" && !inside && !alive) {
+            ss << "\"success\": true, \"active\": \"inactive\", \"already\": true, "
+               << "\"note\": \"语音助手本来就没在运行。\"}]";
+            return ss.str();
+        }
+
+        // 控制台里 stop：立即停，并且**按 pid 兜底**。
+        // 为什么不能只靠 systemctl：voice_start.sh 手动起的实例 systemd 管不到，
+        // systemctl stop 返回 0、is-active 也是 inactive，于是报"已停止"——但实际上进程还活着（假成功）。
+        // 也不用 pkill -f：run_cmd 的 sh 命令行里含同样的字符串，会误杀自己（第 9 条）。
+        if (action == "stop" && !inside && alive) {
+            run_cmd("systemctl stop voice-gateway 2>&1");
+            for (int i = 0; i < 12; ++i) {
+                std::string pids = run_cmd("pgrep -x voice_gateway 2>/dev/null");
+                if (pids.empty()) break;
+                std::stringstream ps(pids);
+                std::string one;
+                while (ps >> one) {
+                    pid_t p = (pid_t)atoi(one.c_str());
+                    if (p > 0) kill(p, SIGTERM);
+                }
+                sleep(1);
+            }
+            bool gone = run_cmd("pgrep -x voice_gateway 2>/dev/null").empty();
+            ss << "\"success\": " << (gone ? "true" : "false")
+               << ", \"active\": \"" << (gone ? "inactive" : "active") << "\", \"note\": \""
+               << (gone ? "语音助手已停止。" : "停止失败，进程仍在运行。") << "\"}]";
+            return ss.str();
+        }
+
+        if (action == "stop" && inside) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                setsid();                          // 脱离会话：父进程死了不影响自己
+                int dn = open("/dev/null", O_RDWR);
+                if (dn >= 0) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); if (dn > 2) close(dn); }
+                sleep(3);
+                execl("/bin/sh", "sh", "-c",
+                      "systemctl stop voice-gateway 2>/dev/null; pkill -TERM -f voice_gatewa",
+                      (char*)nullptr);
+                _exit(0);
+            }
+            ss << "\"success\": true, \"active\": \"active\", "
+               << "\"note\": \"将在 3 秒后关闭语音网关(包含我自己)。这是预期行为，会说完整句话再退出。\"}]";
+            return ss.str();
+        }
+        // 控制台里 stop 且网关在跑：交给下面的通用路径（systemctl stop 是真有效的）
+    }
+
+    // 记录操作前的状态：用来区分"真的停了"和"本来就没在跑"。
+    // 否则 systemctl stop 一个未运行的服务也返回 0，会被报成"已停止"（假成功）。
+    std::string prev = (action == "status")
+                     ? "" : run_cmd(std::string("systemctl is-active ") + svc->unit + " 2>&1");
+
+    std::string out = run_cmd("systemctl " + action + " " + svc->unit + " 2>&1");
+
+    // start/stop 是异步的：systemctl 返回不代表服务真的起来了。
+    // 等 3 秒再查真实状态，否则会把"启动失败"报成成功（LED trigger 那次的教训）。
+    if (action != "status") sleep(3);
+    std::string active = run_cmd(std::string("systemctl is-active ") + svc->unit + " 2>&1");
+
+    bool ok;
+    if (action == "start")      ok = (active == "active");
+    else if (action == "stop")  ok = (active != "active");
+    else                        ok = true;
+
+    // start 的判据再进一步：**端口/HTTP 真的通了**才算起来。
+    // 只看 is-active 会在"进程活着但模型没加载成功"的窗口里误报成功（见上方探针注释）。
+    bool not_ready = false;
+    if (action == "start" && ok) {
+        const std::string a = svc->alias;
+        if      (a == "dashboard") ok = http_ok("8090", 10);
+        else if (a == "gateway")   ok = port_ok("9000", 10);
+        if (!ok) not_ready = true;
+    }
+
+    ss << "\"success\": " << (ok ? "true" : "false") << ", \"active\": \"" << active << "\"";
+    if (!out.empty() && !ok)
+        ss << ", \"error_detail\": \"" << out.substr(0, 160) << "\"";
+
+    if (not_ready)
+        ss << ", \"note\": \"进程起来了但端口没通——多半是 NPU 内存不足导致模型加载失败。"
+              "建议先关掉语音助手或看板再试。\"";
+    else if (action == "stop" && ok && prev != "active")
+        ss << ", \"note\": \"本来就没在运行。\"";
+    // 看板占 NPU，必须让模型主动告知用户"之后我会变慢"
+    else if (std::string(svc->alias) == "dashboard" && ok)
+        ss << ", \"note\": \"" << (action == "start"
+                 ? "看板已启动(:8090)。视觉推理会占用 NPU，我之后的响应会变慢，这是正常的资源争用。"
+                 : "看板已停止，NPU 已释放，响应速度恢复正常。") << "\"";
+    else if (ok && action == "start")
+        ss << ", \"note\": \"" << svc->desc << " 已启动。\"";
+
+    // 访问地址必须由工具给出，不能让模型自己编 ——
+    // 模型默认会说 localhost，而用户在另一台电脑上访问 localhost 就是他自己的机器。
+    if (std::string(svc->alias) == "dashboard") {
+        ss << ", \"url\": \"http://" << local_ip() << ":8090/\", "
+           << "\"url_note\": \"这是用户在自己电脑浏览器里该打开的地址。"
+              "不要说 localhost 或 127.0.0.1，那个指向用户自己的机器。\"";
+    } else if (std::string(svc->alias) == "gateway") {
+        ss << ", \"url\": \"tcp://" << local_ip() << ":9000\", "
+           << "\"url_note\": \"TCP 定长帧协议，不是网页，不能直接用浏览器打开。\"";
+    }
+
+    ss << "}]";
     return ss.str();
 }
 
@@ -930,6 +1207,22 @@ bool dispatch_all_tool_calls(const std::string& model_output, std::string& combi
             }
         }
 
+        // 通用参数提取（control_service 需要 name + action 两个）
+        auto get_param = [&](const char* key, const char* dflt) -> std::string {
+            std::string tag = std::string("<parameter=") + key + ">";
+            size_t s = call_body.find(tag);
+            if (s == std::string::npos) return dflt;
+            s += tag.size();
+            size_t e = call_body.find("</parameter>", s);
+            if (e == std::string::npos) return dflt;
+            std::string v = call_body.substr(s, e - s);
+            size_t b = v.find_first_not_of(" \t\r\n");
+            size_t en = v.find_last_not_of(" \t\r\n");
+            return (b == std::string::npos) ? std::string(dflt) : v.substr(b, en - b + 1);
+        };
+        std::string param_name   = get_param("name", "");
+        std::string param_action = get_param("action", "");
+
         std::cout << "\n========================================================" << std::endl;
         std::cout << "⚙️  [Agent 决策] 触发物理硬件工具: " << tool_name << std::endl;
 
@@ -940,7 +1233,14 @@ bool dispatch_all_tool_calls(const std::string& model_output, std::string& combi
             obs = tool_get_led_status();
         } else if (tool_name == "control_led") {
             std::cout << "   -> 设定参数: mode = " << param_mode << std::endl;
-            obs = tool_control_led(param_mode);
+            // 语义泛化拦截：本轮在处理"服务"请求时，不许顺手改灯。
+            // 实测"打开车辆看板"会连带 control_led(heartbeat) —— 它把"打开"理解成了"开灯"。
+            if (g_service_in_turn) {
+                obs = "[{\"success\": false, \"error\": \"rejected_by_guard\", "
+                      "\"note\": \"本轮正在处理服务启停请求，与指示灯无关，灯控已被拒绝。\"}]";
+            } else {
+                obs = tool_control_led(param_mode);
+            }
         } else if (tool_name == "get_vision_telemetry") {
             obs = tool_get_vision_telemetry();
         } else if (tool_name == "get_patrol_events") {
@@ -948,6 +1248,20 @@ bool dispatch_all_tool_calls(const std::string& model_output, std::string& combi
             obs = tool_get_patrol_events(param_tail);
         } else if (tool_name == "get_patrol_status") {
             obs = tool_get_patrol_status();
+        } else if (tool_name == "control_service") {
+            std::cout << "   -> 设定参数: name = " << param_name
+                      << ", action = " << param_action << std::endl;
+            // 硬拦越权：一轮里只允许启动一个服务。
+            // 实测模型会把"打开看板"扩展成"看板 + 巡检守护"一起启动。
+            if (param_action == "start" && g_start_in_turn >= 1) {
+                obs = "[{\"success\": false, \"error\": \"rejected_by_guard\", "
+                      "\"note\": \"本轮已经启动过一个服务，拒绝连带启动其他服务。\""
+                      "\"如果用户确实需要，请单独再下达一次指令。\"}]";
+            } else {
+                if (param_action == "start") ++g_start_in_turn;
+                g_service_in_turn = true;
+                obs = tool_control_service(param_name, param_action);
+            }
         } else {
             obs = "[{\"error\": \"Unknown tool requested: " + tool_name + "\"}]";
         }
@@ -988,7 +1302,218 @@ bool dispatch_all_tool_calls(const std::string& model_output, std::string& combi
 // -------------------------------------------------------------
 // Agent 交互核心流程 (带 ReAct 自主多步循环)
 // -------------------------------------------------------------
+// -------------------------------------------------------------
+// 快速通道（意图路由）
+// -------------------------------------------------------------
+// 高频固定问题绕开 LLM 直接回答：约 10 s → 0.05 s。
+//
+// 设计原则：**只匹配明确无歧义的说法，拿不准的一律交回 LLM**。
+// 宁可慢一点，也不能答错 —— 用户听到一个"很快但驴唇不对马嘴"的回答，
+// 比多等 10 秒糟得多。
+//
+// 顺序很重要：
+//   服务控制 → LED 控制 → LED 状态 → 温度 → 告警 → 时间
+// "打开看板" 必须先被服务分支吃掉，否则 "打开" 会被 LED 分支理解成开灯（实测犯过）。
+static bool has_any(const std::string& s, std::initializer_list<const char*> ks) {
+    for (const char* k : ks)
+        if (s.find(k) != std::string::npos) return true;
+    return false;
+}
+
+// 同一件事准备几种说法轮换，避免每次回答一字不差（听感差别很大）
+static const char* pick_variant(std::initializer_list<const char*> vs, size_t seed) {
+    size_t n = vs.size();
+    if (n == 0) return "";
+    return *(vs.begin() + (seed % n));
+}
+
+bool try_fast_path(const std::string& q, std::string& out) {
+    const size_t seed = q.size() * 131 + q[0];
+
+    // ---- 0. "日志怎么看" 这类元问题 ----
+    // 实测踩过：说"语音助手日志怎么看"，被下面的服务分支当成 status 查询，
+    // 回了句"正在运行。"——问的是运维方法，答的是运行状态。
+    if (q.find("日志") != std::string::npos) {
+        out = "语音链路看 journalctl -u voice-gateway -f，Agent 自己的输出也在里面；"
+              "旧的滚动日志在 /tmp/vgw.log。";
+        return true;
+    }
+
+    // ---- 0.5 寒暄：模型见到人就想找个理由调工具 ----
+    // 实测：说"你好"，它调了 get_led_status，然后回答变成"指示灯当前心跳呼吸…"。
+    // 寒暄不需要任何数据，直接在代码里答掉，既快又不可能答歪。
+    // 长度限制是护栏：避免把"你好，灯什么状态"这种带诉求的句子也吞掉。
+    if (q.size() <= 12 &&
+        has_any(q, {"你好", "您好", "在吗", "嗨", "哈喽", "hello", "hi"})) {
+        out = pick_variant({"我在。", "您好。", "在的。"}, seed);
+        return true;
+    }
+
+    // ---- 0.6 社交用语：道谢/确认不需要任何硬件 ----
+    // 实测：说"谢谢"，它调了 get_system_health + get_led_status + get_patrol_status，
+    // 回了一屏设备状态。礼貌用语没有信息需求，代码答掉最稳。
+    if (q.size() <= 12 &&
+        has_any(q, {"谢谢", "多谢", "感谢", "收到", "明白", "好的", "辛苦了", "嗯", "ok", "OK"})) {
+        out = pick_variant({"不客气。", "嗯。", "好。"}, seed);
+        return true;
+    }
+
+    // ---- 1. 服务控制（必须最先：说"打开看板"不能被当成开灯）----
+    // 但要排除"怎么/在哪/为什么"这类元问题——它们问的是方法，不是指令。
+    const bool meta = has_any(q, {"怎么", "如何", "为什么", "是什么", "干什么",
+                                  "有什么用", "在哪", "哪里"});
+    if (!meta &&
+        has_any(q, {"看板", "8090", "车辆检测", "推流", "9000", "网关", "巡检守护", "语音助手"})) {
+        std::string name;
+        if (has_any(q, {"看板", "8090", "车辆检测"}))          name = "dashboard";
+        else if (has_any(q, {"推流", "9000", "网关"}))         name = "gateway";
+        else if (q.find("巡检守护") != std::string::npos)       name = "patrol";
+        else if (q.find("语音助手") != std::string::npos)       name = "voice";
+
+        if (!name.empty()) {
+            std::string action;
+            if (has_any(q, {"关掉", "关闭", "停掉", "停止", "别开"})) action = "stop";
+            else if (has_any(q, {"打开", "启动", "开启", "开始", "开一下", "开开", "开起来"}))
+                                                                     action = "start";
+            else                                                     action = "status";
+
+            std::string obs;
+            if (action == "start" && g_start_in_turn >= 1) {
+                obs = "[{\"success\": false, \"active\": \"unknown\", "
+                      "\"note\": \"本轮已启动过一个服务\"}]";
+            } else {
+                if (action == "start") ++g_start_in_turn;
+                obs = tool_control_service(name, action);
+            }
+
+            std::string active = extract_json_field(obs, "active");
+            std::string url    = extract_json_field(obs, "url");
+            std::string note   = extract_json_field(obs, "note");
+            // 回答必须带对象名：只说"已停止。"，用户不知道停的是哪台服务
+            const std::string zh = (name == "dashboard") ? "看板"
+                                 : (name == "gateway")   ? "推流网关"
+                                 : (name == "patrol")    ? "巡检守护" : "语音助手";
+
+            if (action == "status") {
+                out = zh + (active == "active" ? "正在运行。" : "没在运行。");
+            } else if (action == "start") {
+                // 四种回执：交接 / 本来就在跑 / 正常启动 / 失败
+                if (obs.find("\"handover\": true") != std::string::npos)
+                    out = "好的，我先把控制台关掉让出 NPU，语音助手会在几秒后自动启动"
+                          "（约需 70 秒就绪）。";
+                else if (obs.find("\"already\": true") != std::string::npos)
+                    out = zh + "已经在运行了。";
+                else if (active == "active")
+                    out = zh + pick_variant({"已启动。", "开好了。", "已经打开了。"}, seed);
+                else
+                    out = zh + "启动失败，请稍后再试。";
+                if (active == "active" && !url.empty()) out += "访问地址 " + url;
+            } else {
+                // voice+stop 是「延迟 3 秒自杀」的特殊路径：此刻 active 仍是 active，
+                // 但已经安排好了退出。不能按"没停掉"来报失败。
+                if (note.find("本来就没在运行") != std::string::npos)
+                    out = zh + "本来就没在运行。";
+                else if (active != "active")
+                    out = zh + pick_variant({"已停止。", "关掉了。"}, seed);
+                else if (note.find("秒后") != std::string::npos)
+                    out = "好的，3 秒后关闭语音助手。";
+                else
+                    out = zh + "停止失败，请稍后再试。";
+            }
+            return true;
+        }
+    }
+
+    // ---- 2. LED 控制（写在"灯状态"之前，否则"关灯"会被状态分支吃掉）----
+    if (q.find("灯") != std::string::npos &&
+        has_any(q, {"关掉", "关闭", "打开", "改成", "切换", "设为", "设成",
+                    "心跳", "报警", "常亮", "熄灭", "灭"})) {
+        std::string mode;
+        if (has_any(q, {"关", "灭"}))                       mode = "off";
+        else if (has_any(q, {"报警", "急闪"}))               mode = "alarm";
+        else if (has_any(q, {"常亮", "打开"}))               mode = "on";
+        else if (q.find("心跳") != std::string::npos)        mode = "heartbeat";
+
+        if (!mode.empty()) {
+            std::string obs = tool_control_led(mode);
+            out = (extract_json_field(obs, "success") == "true")
+                ? pick_variant({"已切换。", "好了。", "设好了。"}, seed)
+                : "切换失败。";
+            return true;
+        }
+    }
+
+    // ---- 3. LED 状态 ----
+    // 直接用工具返回的 description，**不要在这里再维护一份模式表**。
+    // 实测踩过：这里漏了 alarm_blink（用户态爆闪），用户听到"指示灯当前是alarm_blink"。
+    if (q.find("灯") != std::string::npos &&
+        has_any(q, {"状态", "怎么样", "在闪", "亮着", "什么模式", "什么情况"})) {
+        std::string st   = tool_get_led_status();
+        std::string desc = extract_json_field(st, "description");
+        if (desc.empty()) desc = extract_json_field(st, "current_mode");
+        out = "指示灯当前是" + desc + "。";
+        return true;
+    }
+
+    // ---- 4. 温度 / 健康 ----
+    if (has_any(q, {"温度", "多少度", "热不热", "多热"})) {
+        std::string soc = extract_json_field(tool_get_system_health(), "soc_temp_c");
+        if (!soc.empty()) {
+            out = pick_variant({"SOC 温度 ", "当前温度 ", "板子温度 "}, seed) + soc + " 度，正常。";
+            return true;
+        }
+    }
+
+    // ---- 5. 告警 / 巡检 ----
+    if (has_any(q, {"告警", "报警", "安全吗", "有没有人", "有人吗"})) {
+        std::string running = extract_json_field(tool_get_patrol_status(), "running");
+        out = (running == "true") ? "巡检守护在运行，当前没有告警。"
+                                  : "巡检守护没在运行，不会自动报警。";
+        return true;
+    }
+
+    // ---- 6. 时间（纯本地，不需要联网）----
+    if (has_any(q, {"几点", "什么时间", "现在时间", "几号", "今天几"})) {
+        std::string hm = run_cmd("date +'%H点%M分'");
+        if (!hm.empty()) {
+            out = pick_variant({"现在是 ", "当前时间 ", "这会儿是 "}, seed) + hm;
+            return true;
+        }
+    }
+
+    return false;   // 没命中：交回 LLM
+}
+
 void run_agent_turn(LLMHandle handle, RKLLMInferParam& infer, const std::string& user_query) {
+    g_start_in_turn = 0;      // 每轮重置"已启动服务数"计数
+
+    // 快速通道：高频固定问题绕开 LLM（实测 10 s → 0.05 s）。
+    // 输出格式必须和 LLM 路径一致（用「终局汇报」标记），
+    // 否则 voice_gateway 的段落解析抓不到回答，会降级成"我听到你说…"。
+    {
+        std::string fast;
+        if (try_fast_path(user_query, fast)) {
+            std::cout << "⚡ [快速通道] 规则命中，跳过 LLM\n" << std::endl;
+            std::cout << "🤖 [Edge Agent 推进决策 / 终局汇报]:" << std::endl;
+            std::cout << "--------------------------------------------------------" << std::endl;
+            std::cout << fast << std::endl;
+            return;
+        }
+    }
+
+    // 按用户意图预判本轮是不是"服务类请求"，而不是等 control_service 被调用后再判断。
+    // 原因：实测模型会**先**调 control_led(heartbeat) **再**调 control_service ——
+    // 等第二个发生时灯已经被改了。所以必须在回合开始就封住灯控。
+    g_service_in_turn =
+        user_query.find("看板")     != std::string::npos ||
+        user_query.find("网关")     != std::string::npos ||
+        user_query.find("推流")     != std::string::npos ||
+        user_query.find("巡检守护") != std::string::npos ||
+        user_query.find("服务")     != std::string::npos ||
+        user_query.find("8090")     != std::string::npos ||
+        user_query.find("9000")     != std::string::npos ||
+        user_query.find("车辆检测") != std::string::npos;
+
     std::cout << "\n========================================================" << std::endl;
     std::cout << "👤 [User]: " << user_query << std::endl;
     std::cout << "🤖 [Edge Agent 思考与决策]:" << std::endl;
@@ -1135,6 +1660,38 @@ int main(int argc, char** argv) {
         "- 查询画面识别目标请调用 get_vision_telemetry。\n"
         "- 查询巡检守护产生的硬件告警事件请调用 get_patrol_events。\n"
         "- 查询巡检守护**当前是否在运行、实际生效阈值、当前告警状态**请调用 get_patrol_status。\n"
+        "- 用户要求打开/关闭/查询**车辆检测看板、推流网关、巡检守护**时，调用 control_service(name, action)。"
+        "name 与口头的对应关系：看板/车辆检测/8090 → dashboard；推流/网关/9000 → gateway；"
+        "巡检守护 → patrol；语音助手/你自己 → voice。\n"
+        "- 【失败必须如实说·最高优先级】工具返回 `success:false` 或带 `error` 字段时，"
+        "必须明确告诉用户「操作失败」并转述原因，**绝对不能说成已经完成**。"
+        "实测出现过把 `rejected_by_guard` 说成「LED 已关闭」的情况——工具明明拒绝了，"
+        "却汇报成功，这比答得慢严重得多。看不清楚结果就说不确定，不要编。\n"
+        "- 【严禁混淆·实测踩过】\"关闭车辆检测\"\"关掉看板\"\"停掉 8090\" 都指 dashboard 服务，"
+        "必须用 control_service(name=dashboard, action=stop)。"
+        "**绝不要用 control_led** —— control_led 只是改指示灯亮灭，跟看板完全无关；"
+        "调错了不但没关看板，还顺手把灯关了。\n"
+        "- 【地址必须照抄工具的 url 字段】用户问\"怎么访问/地址是什么\"时，"
+        "直接用 control_service 返回的 `url`。**禁止说 localhost 或 127.0.0.1** —— "
+        "用户是在自己电脑上开浏览器，localhost 指向他自己的机器，必然打不开。\n"
+        "- 【只调必需的工具】用户只说\"打开/关闭某个服务\"时，只调 control_service 这一个，"
+        "**不要顺带调 get_system_health / get_led_status** —— 那会让用户多等十几秒，"
+        "而且答案里塞满他没问的温度和灯状态。\n"
+        "- 【只动用户点名的那个服务·最高优先级】用户说\"打开看板\"就**只启动 dashboard 一个**，"
+        "绝对不要连带启动巡检守护、推流网关或其他任何服务。"
+        "每个服务都需要用户单独授权——自作主张启动用户没提的服务是越权，不可接受。"
+        "一条消息里最多只能有**一个** control_service(start) 调用。\n"
+        "- 【必须主动说明】启动 dashboard 或 gateway 会占用 NPU，执行成功后你**必须告诉用户"
+        "\"我的响应会变慢\"**，不要只说\"已启动\"就完事。\n"
+        "- 【为什么变慢·被追问时用真数字】NPU 三核是所有进程共享的：看板跑 YOLOv8 时"
+        "每帧约 16 毫秒、30 帧/秒常驻占用；我每生成一个 token 都要过一遍 NPU，算力被分走就变慢。"
+        "实测同一个问题：看板停止时约 10 tok/s，看板运行时约 3 tok/s。"
+        "被问\"为什么占用 NPU 你就变慢\"时用这两个数字解释，**不要只复述\"占用 NPU 所以变慢\"**。\n"
+        "- 【自我关闭是正常行为】用户说\"关掉语音助手/关掉你自己/退出\"时，"
+        "调用 control_service(name=voice, action=stop)。它会在 3 秒后真正执行，"
+        "目的是让你把这句话播报完。执行后你会被终止，**这是预期行为**，"
+        "不要声称\"操作失败\"或\"发生异常\"。\n"
+        "- 不要反复调 status 求安心，一次就够；启动失败时要如实转述 error_detail。\n"
         "- 【按需调用·严禁过度感知】只调用能直接回答本问题的那一个工具。"
         "用户打招呼、闲聊、问你是谁、道谢、告别时，**直接用一句话回应，不要调用任何工具**。"
         "只有问题确实涉及某项数据时才调对应工具（问温度→get_system_health，问灯→get_led_status，"
@@ -1155,6 +1712,9 @@ int main(int argc, char** argv) {
         "默认限制在 **2 句话、40 字以内**，只给结论和最关键的一个数字；"
         "不要列字段清单、不要分点长篇、不要重复工具名。"
         "只有用户明确要求\"详细报告/完整汇报\"时才可展开。\n"
+        "- 用户问\"日志在哪看/怎么排查\"时，直接给真实存在的命令：语音链路 "
+        "`systemctl status voice-gateway`、`journalctl -u voice-gateway -f`（旧日志 /tmp/vgw.log）；"
+        "**不要编造不存在的日志路径或文件名**。\n"
         "- 汇报时只陈述工具真实返回的字段，**不要臆测工具的内部实现**"
         "（如猜测 control_led 的枚举值编码、猜测 sysfs 节点的数值含义）。"
         "拿不准的就说不确定或直接省略，不要编一段\"若系统内部逻辑为0=off…\"之类的推测。\n"
@@ -1253,6 +1813,29 @@ int main(int argc, char** argv) {
             "properties": {}
           }
         }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "control_service",
+          "description": "启停或查询板载子系统服务。dashboard=车辆实时检测看板(HTTP :8090, 车辆实时检测); gateway=TCP推流网关(:9000); patrol=巡检守护(快层); voice=语音交互网关(就是我自己)。注意: 启动 dashboard 或 gateway 会占用 NPU, 导致我之后的响应明显变慢",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": ["dashboard", "gateway", "patrol", "voice"],
+                "description": "服务名: dashboard(看板:8090) / gateway(推流:9000) / patrol(巡检守护) / voice(语音网关, 即我自己)"
+              },
+              "action": {
+                "type": "string",
+                "enum": ["start", "stop", "status"],
+                "description": "动作: start 启动 / stop 停止 / status 查询当前状态"
+              }
+            },
+            "required": ["name", "action"]
+          }
+        }
       }
     ])RAW";
 
@@ -1279,16 +1862,55 @@ int main(int argc, char** argv) {
         }
     } else {
         // 2. 无参数时，进入常驻交互式 REPL 控制台！
+        //
+        // 预热：首轮 prefill 要把 2000+ 字的 system prompt 全部编码进 KV cache，
+        // 实测耗时约 28 秒（纯 CPU：图优化 + 权重预处理 + jieba/lexicon/FST 解析，
+        // 与文本长度无关）。这一步躲不掉，只能决定"什么时候付"——
+        // 放在启动阶段付掉，用户第一次提问就只需 prefill 问题本身（几十 token），
+        // 几秒就能出结果；否则就是干等 28 秒，体验上完全不可接受。
+        {
+            std::cout << "\n🔥 预热中（首轮 system prompt 编码约 30s，之后每轮 10s 内）..."
+                      << std::flush;
+            time_t t_warm = time(nullptr);
+            g_quiet = true;
+            {
+                RKLLMInput wi{};
+                wi.role = "user";
+                wi.input_type = RKLLM_INPUT_PROMPT;
+                wi.prompt_input = "hi";
+                rkllm_run(handle, &wi, &infer, nullptr);
+            }
+            g_quiet = false;
+            g_step_output.clear();
+            // keep_system_prompt=1 —— 只丢掉预热这轮说的话，system prompt 的 KV 必须留下
+            rkllm_clear_kv_cache(handle, 1, nullptr, nullptr);
+            std::cout << " 完成，耗时 " << (long)(time(nullptr) - t_warm)
+                      << "s（上下文已重置，可直接开始对话）" << std::endl;
+        }
+
         std::cout << "\n========================================================" << std::endl;
         std::cout << "💬 已就绪！进入纯端侧 Agent 常驻交互控制台 (秒级响应)" << std::endl;
         std::cout << "   - 输入自然语言直接与智能体对话 (如: '指示灯是什么状态', '开发板运行怎么样')" << std::endl;
         std::cout << "   - 特殊指令: '/clear' 清空上下文, 'exit' 或 'quit' 退出" << std::endl;
         std::cout << "========================================================" << std::endl;
 
+        // 装信号处理：必须在进入交互循环之前。
+        // 刻意不加 SA_RESTART —— 要让阻塞中的 getline 被信号打断返回，
+        // 否则 Ctrl+C / systemctl stop 之后还得等用户敲一下回车才能退出。
+        {
+            struct sigaction sa{};
+            sa.sa_handler = on_term_signal;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = 0;
+            sigaction(SIGTERM, &sa, nullptr);
+            sigaction(SIGINT,  &sa, nullptr);
+        }
+
         std::string line;
-        while (true) {
+        while (!g_stop) {
             std::cout << "\nEdgeAgent> " << std::flush;
-            if (!std::getline(std::cin, line)) break;
+            if (!std::getline(std::cin, line)) break;   // EOF 或被信号打断
+            if (g_stop) break;
             
             // 去除空白
             while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
@@ -1300,6 +1922,17 @@ int main(int argc, char** argv) {
                 std::cout << "⚠️  输入含非 UTF-8 字节（终端编码可能不是 UTF-8），已替换为 '?'。\n"
                              "    Windows 下请先执行 `chcp 65001`，或在 SSH 客户端里把字符集设为 UTF-8。"
                           << std::endl;
+                // 内容已经损坏，不能拿去问模型 ——
+                // 否则模型会对着 "?" 之类猜一个话题、白调一次工具、再生成一段无关回答（实测发生过）
+                std::cout << "    (本轮已丢弃，请重新输入)" << std::endl;
+                continue;
+            }
+
+            // 单字节输入（误按键、输入法残留、粘贴了一半）直接忽略。
+            // 汉字最短 3 字节，所以 <2 只会挡住 ASCII 噪声，不会误伤"灯""关"这类单字指令。
+            if (line.size() < 2) {
+                std::cout << "    (输入过短，已忽略)" << std::endl;
+                continue;
             }
 
             if (line == "exit" || line == "quit" || line == "/quit" || line == "q") {

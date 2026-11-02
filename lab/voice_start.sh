@@ -61,7 +61,7 @@ start_tts_daemon() {
         return
     fi
     rm -f "$TTS_SOCK"
-    nohup "$TTS_DAEMON" > "$TTS_LOG" 2>&1 < /dev/null &
+    setsid nohup "$TTS_DAEMON" > "$TTS_LOG" 2>&1 < /dev/null &
     local i
     for i in $(seq 1 20); do
         [ -S "$TTS_SOCK" ] && break
@@ -120,6 +120,21 @@ fi
 
 stop_children
 echo "[2/3] 已清理残留进程"
+
+# ES8388 的耳机输出开关会在音频设备重开时被驱动重置成 off ——
+# 不打开的话 aplay 照常返回成功、日志显示播放完成，但耳机一点声音都没有。
+# 这个坑排查了很久（见 TROUBLESHOOTING 第 37 条），放这里一劳永逸。
+amixer -c 2 cset numid=16 on >/dev/null 2>&1
+# 板载扬声器通路同样默认 off，而且它比 numid=16 更隐蔽：
+# 只开 numid=16 时声音全走耳机口，板载喇叭一点不出声，
+# aplay 依旧返回 0（TROUBLESHOOTING 第 49 条）。
+amixer -c 2 sset Speaker on >/dev/null 2>&1
+# 音量：PCM 上限是 192（0 dB），写 200 会被钳到满档，实测非常吵。
+# 160 ≈ −13.5 dB，配 Output 28 在室内是正常说话的音量。
+# 嫌小/嫌大直接改这两行，或用 amixer 现场调（见 README）。
+amixer -c 2 sset PCM 160 >/dev/null 2>&1
+amixer -c 2 sset "Output 1" 28 >/dev/null 2>&1
+amixer -c 2 sset "Output 2" 28 >/dev/null 2>&1
 
 echo "[2.5] 启动 TTS 常驻服务（加载模型约 4 秒）..."
 start_tts_daemon

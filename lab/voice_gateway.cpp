@@ -66,6 +66,15 @@ static const int   kSpkRate = 48000;      // ES8388 不支持 16 kHz，必须 48
 
 // ---------------------------------------------------------------- 运行状态
 static volatile sig_atomic_t g_running = 1;
+static time_t g_active_until = 0;    // 软唤醒：激活态截止时间戳
+
+// 播报后的"回音静音窗"截止时间。
+// 为什么需要：speak() 用 SIGSTOP 冻结 ASR 防自激，但 SIGSTOP 只停进程，
+// ALSA 的 DMA 缓冲仍在采集扬声器漏进麦克风的声音。SIGCONT 之后
+// vad-alsa 会把这段回声当成新语音读出来再识别一遍 ——
+// 实测把它自己的"我在"识别成「在」、把整段回答识别成新的输入，
+// 直接污染了对话上下文。所以恢复后再静默 2 秒，这段时间的识别结果全丢。
+static time_t g_mute_asr_until = 0;
 static pid_t g_asr_pid   = -1;
 static pid_t g_agent_pid = -1;
 static int   g_asr_fd    = -1;   // 读 ASR 子进程 stdout
@@ -302,7 +311,21 @@ static bool tts_via_daemon(const std::string& text, const char* out_wav) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) { close(fd); return false; }
+    // daemon 刚 listen 完时，第一次 connect 有可能失败（backlog 未排上 / 上一轮连接还没释放）。
+    // 实测「启动后 1 秒内首次 connect 失败」会让整轮降级成 fork/exec，多花 3.7 秒。
+    // 重试 3 次、每次 200ms，最坏多等 0.6 秒，远好于降级的 3.7 秒。
+    bool connected = false;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) { connected = true; break; }
+        if (attempt == 2) break;
+        usleep(200000);
+        close(fd);                                  // connect 失败后 fd 状态不可复用，必须重建
+        fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+    if (!connected) { close(fd); return false; }
 
     uint32_t len_be = htonl((uint32_t)text.size());
     if (write(fd, &len_be, 4) != 4 ||
@@ -480,6 +503,44 @@ static void speak(const std::string& raw) {
     logf("  [耗时] 共 %zu 段，播报总时段 %lds", spoken, (long)(time(nullptr) - t_all));
 
     if (g_asr_pid > 0) kill(g_asr_pid, SIGCONT);
+    g_mute_asr_until = time(nullptr) + 2;   // 回音静音窗，见变量声明处的说明
+}
+
+// ---------------------------------------------------------------- 软唤醒
+// 不用 KWS 模型做门控，而是让常驻的 ASR 一直识别，文本里出现唤醒词就进入激活态。
+//
+// 为什么放弃 KWS：KWS 和 ASR 都要独占麦克风，切一次要重载 ASR 模型（约 4 秒），
+// 喊完唤醒词还得干等 4 秒才能说话，体验比现在还差。
+// 而 ASR 本来就常驻（RTF 0.023，CPU 约 3%），让它一直听、靠文本匹配唤醒，零切换开销。
+//
+// 同音字都要收：ASR 对生词常识别成同音字，只匹配"小瑞"会导致一半喊不动。
+static const char* kWakeWords[] = {"小瑞", "小锐", "晓瑞", "小睿", "小蕊"};
+static const int kWakeActiveSec = 10;    // 唤醒后保持激活的秒数
+
+static bool is_wake(const std::string& t) {
+    for (const char* w : kWakeWords)
+        if (t.find(w) != std::string::npos) return true;
+    return false;
+}
+
+// 把唤醒词从文本里剥掉："小瑞，温度多少" → "温度多少"
+static std::string strip_wake(const std::string& t) {
+    std::string s = t;
+    for (const char* w : kWakeWords) {
+        size_t p;
+        while ((p = s.find(w)) != std::string::npos) s.erase(p, strlen(w));
+    }
+    static const char* kPunct[] = {"\xEF\xBC\x8C", "\xE3\x80\x82", "\xE3\x80\x81",
+                                   "\xEF\xBC\x81", "\xEF\xBC\x9F", " ", ","};
+    bool go = true;
+    while (go && !s.empty()) {
+        go = false;
+        for (const char* p : kPunct) {
+            size_t len = strlen(p);
+            if (s.size() >= len && s.compare(0, len, p) == 0) { s.erase(0, len); go = true; break; }
+        }
+    }
+    return s;
 }
 
 // ---------------------------------------------------------------- ASR 子进程
@@ -668,7 +729,12 @@ static void reap(pid_t pid, const char* name) {
     kill(pid, SIGCONT);          // 先解冻：可能被半双工的 SIGSTOP 冻着
     kill(pid, SIGTERM);
     int st = 0;
-    for (int i = 0; i < 20; ++i) {
+    // 等 6 秒而不是 2 秒。
+    // Agent 收到 SIGTERM 后要走 rkllm_destroy() 释放 2 GB 的 NPU 映射，
+    // 这个过程实测要 3~5 秒。原来只等 2 秒就 SIGKILL，正好把它砍在释放中途，
+    // 结果 IOVA 泄漏（dmesg used 卡在 3873 MiB），下次启动直接 errno 14，
+    // 只能重启板子 —— 今晚为此重启了四次。
+    for (int i = 0; i < 60; ++i) {
         if (waitpid(pid, &st, WNOHANG) == pid) return;
         usleep(100000);
     }
@@ -801,8 +867,32 @@ int main(int argc, char** argv) {
             ++seg;
             logf("👤 [%d] %s", seg, text.c_str());
 
-            // 粗过滤：先挡住极短的无意义片段（真正的唤醒词门控待做）
-            if (text.size() < 3) { logf("    (过短，丢弃)"); continue; }
+            // 粗过滤：先挡住极短的无意义片段
+            if (text.size() < 6) { logf("    (过短，丢弃)"); continue; }
+
+            // 播报回音窗：这期间识别到的内容基本是自己刚说的话，直接丢弃
+            if (time(nullptr) < g_mute_asr_until) {
+                logf("    (播报回音窗内，丢弃)");
+                continue;
+            }
+
+            // 软唤醒门控
+            if (is_wake(text)) {
+                std::string cmd = strip_wake(text);
+                g_active_until = time(nullptr) + kWakeActiveSec;
+                if (cmd.size() < 2) {
+                    logf("🔔 已唤醒（%d 秒内可下达指令）", kWakeActiveSec);
+                    speak("我在");
+                    continue;
+                }
+                logf("🔔 已唤醒 + 指令：%s", cmd.c_str());
+                text = cmd;
+            } else if (time(nullptr) >= g_active_until) {
+                logf("    (未唤醒，忽略)");
+                continue;
+            } else {
+                logf("    (激活期内，直送 Agent)");
+            }
 
             std::string reply;
             if (g_agent_in >= 0) {

@@ -1,0 +1,85 @@
+# /etc/systemd/system/voice-gateway.service
+# RK3588 语音助手：开机自启 + 崩溃自愈
+# 改了本文件后必须：systemctl daemon-reload
+# 设计说明与坑位见 /root/voice_start.sh（手工启停脚本，保留不动）
+
+[Unit]
+# 依赖 TTS 常驻服务：它不在的话网关会降级成 fork/exec，每段播报多花 3.7 秒
+After=tts-daemon.service
+Wants=tts-daemon.service
+Description=RK3588 Voice Gateway (ASR + RKLLM Agent)
+# --- NPU 互斥：与 edgevision(:9000 推流网关) 二选一 ---
+# edgevision 也占 NPU，两者并行时 Agent 单轮响应从 ~10s 劣化到 ~39s。
+# 用 Conflicts= 声明互斥，等价于 voice_start.sh 里的 systemctl stop edgevision.service，
+# 但它是声明式的：不嵌套调用 systemctl（ExecStartPre 里调 systemctl 属于反模式，
+# 会和本次启动事务死锁，且在 systemd-analyze 依赖图里看不见）。
+# 效果：启动本服务 -> 自动停 edgevision；反过来启动 edgevision -> 自动停本服务
+#      （得益于 Restart=on-failure：被"挤掉"的停止不算 failure，不会互相踢来踢去）。
+Conflicts=edgevision.service
+# 与 Conflicts= 配套的排序：保证"先停完 edgevision，再启动本服务"。
+# 开机时两者都由 multi-user.target 拉起，没有这一行会并行启动，抢 NPU。
+After=edgevision.service
+# 不限重启速率：偶发失败（ALSA/NPU 尚未就绪）能一直自愈。
+# 若更希望"反复失败就停手、别刷日志"，注释掉本行并启用下面两行：
+#   StartLimitIntervalSec=300
+#   StartLimitBurst=10
+StartLimitIntervalSec=0
+
+[Service]
+# ES8388 的耳机输出开关开机默认 off：不打开的话 aplay 返回成功、日志显示播放完成，
+# 但耳机一点声音都没有（排查了很久，见 TROUBLESHOOTING 第 37 条）
+# 板载扬声器通路（Speaker）默认也是 off，比 numid=16 更隐蔽：只开 numid=16 时声音
+# 全走耳机口，板载喇叭完全不出声，而 aplay 照样返回 0（TROUBLESHOOTING 第 49 条）。
+# 音量：PCM 上限 192（0 dB），原先写的 200 会被钳到满档，实测非常吵；
+# 160 ≈ −13.5 dB 配 Output 28 是室内正常音量。要改只改这里和 voice_start.sh 两处。
+ExecStartPre=/bin/sh -c 'amixer -c 2 cset numid=16 on >/dev/null 2>&1; amixer -c 2 sset Speaker on >/dev/null 2>&1; amixer -c 2 sset PCM 160 >/dev/null 2>&1; amixer -c 2 sset "Output 1" 28 >/dev/null 2>&1; amixer -c 2 sset "Output 2" 28 >/dev/null 2>&1'
+Type=simple
+ExecStart=/root/voice_gateway
+
+# --- 工作目录：必须是 /root，不要"顺手"改成 /root/rkllm_deploy ---
+# Agent 子进程的模型是用相对路径 qwen3.5-2b_w8a8_rk3588.rkllm 加载的，
+# 且编译带 -Wl,-rpath=. ；这些都由主程序在 fork 出的子进程里自己解决：
+#     voice_gateway.cpp:457  chdir("/root/rkllm_deploy")
+#     voice_gateway.cpp:458  setenv("LD_LIBRARY_PATH", "/root/rkllm_deploy", 1)
+# 所以本单元不需要（也不应该）设 LD_LIBRARY_PATH。这里的 cwd 只影响主进程自身，
+# 取 /root 与手工 nohup 启动时一致（实测 /proc/2039/cwd -> /root）。
+WorkingDirectory=/root
+
+Environment=HOME=/root
+Environment=LANG=C.UTF-8
+
+# --- 启动前清理残留 ---
+# 上次没死干净的 ASR 会继续霸占 /dev/snd/pcmC0D0c，新实例只会 exit 255 然后无限重启。
+# 这段等价于 voice_start.sh 的 stop_children() + free_mic()，但只做清理、不启动。
+# 两个细节：
+#   1) 变量拆成 "voice_gate""wa"：pgrep/pkill -f 会匹配到这条 sh -c 自身的命令行，
+#      不拆的话它会把自己杀掉（voice_start.sh 里踩过同样的坑）。
+#   2) 前缀 "-"：没进程可杀时 pkill 返回 1，不该因此阻止启动。
+ExecStartPre=-/bin/sh -c 'P="voice_gate""wa"; A="rkllm_embodied""_agen"; R="vad-alsa-offline""-as"; pkill -TERM -f "$P"; sleep 2; pkill -KILL -f "$P"; pkill -KILL -f "$A"; pkill -KILL -f "$R"; fuser -k -9 /dev/snd/pcmC0D0c >/dev/null 2>&1; sleep 1; exit 0'
+
+# --- 停止：必须按 cgroup 杀，不能只杀主进程 ---
+# 两个子进程 fork 后都调用了 setsid()（voice_gateway.cpp 的 spawn_capture），
+# 已脱离主进程的进程组和会话。KillMode=process / mixed 都够不到它们，
+# 结果是孤儿继续占麦克风和 NPU，下次启动 exit 255 无限重启 —— 这就是坑 1。
+# control-group 是 systemd 对 service 的默认值，这里显式写死，
+# 防止有人改了全局 Default KillMode 或加了 drop-in 把它改坏。
+KillMode=control-group
+KillSignal=SIGTERM
+# 宽限期结束后对 cgroup 内残留进程补 SIGKILL（ASR 可能被 SIGSTOP 冻着，不响应 SIGTERM）
+SendSIGKILL=yes
+# 30s 的依据：主程序收到 SIGTERM -> g_running=0 -> 主循环 500ms 内退出 -> reap() 对
+# 每个子进程 SIGTERM 等 2s 再 SIGKILL，实测整体收尾约 5s。留 30s 是给
+# "Agent 卡在 NPU ioctl 不可中断" 的兜底，不会拖慢正常关机。
+TimeoutStopSec=30
+
+# 崩溃（非 0 退出 / 被信号杀死）5 秒后自动拉起；正常 systemctl stop 不重启。
+Restart=on-failure
+RestartSec=5
+
+# 日志统一进 journald（service 的默认行为，此处显式声明）
+StandardOutput=journal
+StandardError=journal
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target

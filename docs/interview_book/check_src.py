@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-"""检查 interview_book/src/*.md 是否符合 STYLE_SPEC 的语法与结构要求。
+"""检查 interview_book/src/*.md 的语法与结构（禁语法、每章骨架、Q 与费曼数量）。
 
+build_book.py 会把违反禁语法的写法渲染错位，改完 md 先跑这个。
 用法: python check_src.py
 """
 import os

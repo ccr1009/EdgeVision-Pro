@@ -14,28 +14,16 @@ deploy/cpp/build/
 .DS_Store
 
 # ---- 个人材料：不进公开仓库 ----
-# 简历源文件与归档版本（含手机号/邮箱/其他人的简历，别推到 GitHub）
-# 2026-10-27：文档搬迁后简历统一放到 docs/resumes/，这里改为整目录屏蔽。
-# 该目录内含 v3~v12 全部简历 docx/pdf/png、生成脚本、两份【他人简历】、Word 锁文件
-# 与 ACL 恢复残留，任何一份被提交都会泄露隐私，所以不做 `!` 反忽略 —— 确需入库的
-# 内容请先移出该目录。
+# 简历源文件与归档版本（含手机号/邮箱、其他人的简历，别推到 GitHub）
+# 该目录内含各版本简历 docx/pdf/png、生成脚本与 Word 锁文件，任何一份被提交都会
+# 泄露隐私，所以不做 `!` 反忽略 —— 确需入库的内容请先移出该目录。
 docs/resumes/
-# 面试问答书的简历文本（含真实手机号与 163 邮箱）
-docs/interview_book/RESUME_TEXT.md
-# 面试问答书的渲染中间产物与校验截图
-docs/interview_book/.dsh-office-*/
-docs/interview_book/_verify2/
-# docs 根目录的成书产物（仍按旧规则屏蔽）
+# docs 根目录的成书产物与中间文件
 docs/*.docx
 docs/*.pdf
 docs/*.json
 # Word 打开文档时生成的锁文件
 ~$*.docx
-# 历史遗留路径（搬迁前的位置，保留以防回滚时漏网）
-docs/archive_resumes/
-docs/_build_resume*.py
-docs/RESUME_INTERN_2026.md
-docs/RESUME_校招_*.md
 # 编辑器/助手本地状态
 docs/.workbuddy/
 .vscode/

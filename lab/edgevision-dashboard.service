@@ -1,0 +1,28 @@
+[Unit]
+Description=EdgeVision Dashboard - vehicle detection on :8090
+Documentation=file:///root/edgevision
+After=network.target
+
+[Service]
+Type=simple
+# 用户手动跑的原命令（保持完全一致，只是交给 systemd 托管）：
+#   cd /root/edgevision && ./deploy/cpp/build_release/edgevision_dashboard --cam /dev/video83 --port 8090
+WorkingDirectory=/root/edgevision
+ExecStart=/root/edgevision/deploy/cpp/build_release/edgevision_dashboard --cam /dev/video83 --port 8090
+
+# 看板会占用 NPU 做 YOLOv8 推理。刻意**不写** Conflicts=edgevision.service：
+# 8090 用 /dev/video83、9000 用 /dev/video81，两者摄像头不冲突，
+# 用户可以同时开。NPU 争用导致的 Agent 变慢由 Agent 自己在回答里提示。
+Restart=on-failure
+RestartSec=5
+
+# 与 voice-gateway 同样的理由：子进程可能 setsid 脱离，只能靠 cgroup 收
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

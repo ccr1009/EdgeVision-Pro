@@ -92,14 +92,16 @@ edgevision-rk3588/
 │   ├── run_benchmark.sh        # 一键运行精度与吞吐基准测试
 │   └── run_all_tests.sh        # 一键运行全系统自测套件
 └── docs/                       # 项目文档体系
+    ├── ARCHITECTURE.md         # 架构总览（面试开场用这份）
     ├── CURRENT_STATUS.md       # 现在能干什么 + 下一步(接手先看这份)
     ├── BENCHMARKS.md           # 性能与延迟基准数据表(含测量口径与局限)
     ├── TROUBLESHOOTING.md      # 踩过的坑:现象 → 排查 → 根因 → 解法(面试素材库)
     ├── LEARNING_PLAN_4WEEKS.md # 4周嵌入式 Linux 应用层实战学习路线
     ├── README.md               # 项目架构与快速上手指南
-    ├── interview/              # 面试技术准备、每周核心考点与高频八股速查
+    ├── RK3588端侧AI部署-面试问答详解.docx / .pdf   # 19 章 252 页面试成书（193 Q + 62 费曼）
+    ├── interview_book/         # 上述成书的 Markdown 源（src/ 19 章）+ 构建脚本
     ├── tech_notes/             # 专项技术方案与深度排错分析报告
-    ├── resumes/                # 正式简历成果 (v12 docx/pdf) 与历史版本归档
+    ├── resumes/                # 正式简历 v13（Linux 版 / 端侧 AI 版）+ 生成脚本
     ├── images/                 # 架构图与演示截图
     └── archive/                # 历史演进草稿与旧规划归档
 ```

@@ -1,0 +1,20 @@
+[Unit]
+Description=TTS resident daemon (vits-zh-fanchen-C, AF_UNIX /tmp/tts_daemon.sock)
+Documentation=file:///root/tts_daemon.cpp
+After=sound.target
+
+[Service]
+Type=simple
+ExecStart=/root/tts_daemon
+# 模型只有 116 MB，崩溃重启成本低；常驻后每次合成省 3.7 s 的 ONNX session 构建
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

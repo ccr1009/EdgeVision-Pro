@@ -307,7 +307,7 @@ python lab/agent_multistep_demo.py --out-dir _workbench/test_results
 |---|---|---|
 | [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) | 现在能干什么 + 下一步 | **接手先看这份** |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | 全部性能/精度实测，含口径与局限 | 想知道数字怎么来的 |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 25 条踩坑记录：现象 → 排查 → 根因 → 解法 | **面试素材主要来源** |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | **34 条**踩坑记录：现象 → 排查 → 根因 → 解法（十节：模型/部署/工具链/测量/编译/并发/摄像头/OpenCV/MPP-NPU/语音Agent） | **面试素材主要来源** |
 | [`docs/tech_notes/AGENT_MULTISTEP_DEMO.md`](docs/tech_notes/AGENT_MULTISTEP_DEMO.md) | 两幕演示设计 + 3 个缺陷复盘 + 面试讲法 | 想讲 Agent 这条线 |
 | [`docs/tech_notes/PATROL_DAEMON_DESIGN.md`](docs/tech_notes/PATROL_DAEMON_DESIGN.md) | 快慢双系统设计 + 为什么快层不用 LLM | 想讲架构取舍 |
 | [`docs/tech_notes/AGENT_TEST_PLAN.md`](docs/tech_notes/AGENT_TEST_PLAN.md) | 12 用例表 + 指标口径 + 故障注入协议 | 想讲测试 |
