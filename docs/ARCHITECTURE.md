@@ -37,7 +37,7 @@
                     │ ②  Agent 决策线     │
                     │  Qwen3.5-2B W8A8   │
                     │  3 核 NPU / rkllm   │
-                    │  6 个硬件工具        │
+                    │  7 个硬件工具        │
                     └─────────┬──────────┘
                               │ sysfs / DRM / POSIX socket
                     ┌─────────▼──────────┐
@@ -68,7 +68,7 @@
 |---|---|
 | 模型 | Qwen3.5-2B W8A8，`rkllm-runtime 1.3.1`，占 3 核 NPU 中全部 3 核 + 2.0 GB IOMMU |
 | 循环 | ReAct 式：思考 → 选工具 → 执行 → 回填观测 → 再思考，最多 5 轮 |
-| 工具 | 6 个：温度/NPU 负载、LED 状态、LED 控制、视觉遥测、巡检事件、巡检运行态（详见 [`tech_notes/AGENT_TOOLS.md`](tech_notes/AGENT_TOOLS.md)） |
+| 工具 | 7 个：温度/NPU 负载、LED 状态、LED 控制、视觉遥测、巡检事件、巡检运行态、服务启停（详见 [`tech_notes/AGENT_TOOLS.md`](tech_notes/AGENT_TOOLS.md)） |
 | 关键约束 | 工具返回**只给事实不给结论**；阈值等运行态必须外化成可查询快照 |
 | 实测 | 首轮预热后 **1 s**、后续每轮 **9~10 s**；工具轮数从 5 降到 1（prompt 分层约束） |
 | 专题 | `tech_notes/AGENT_MULTISTEP_DEMO.md`、`tech_notes/PATROL_DAEMON_DESIGN.md` |

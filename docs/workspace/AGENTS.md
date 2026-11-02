@@ -12,7 +12,7 @@
 > - `edgevision-rk3588/docs/TROUBLESHOOTING.md` —— 踩过的坑:现象 → 排查 → 根因 → 解法(面试可当素材)。**遇到新问题必须往这里追加,规则见下方「工作约定」**
 >
 > **专项技术笔记**(`docs/tech_notes/`,按需查阅):
-> - `AGENT_TOOLS.md` —— Agent 6 个硬件工具的契约与设计取舍(**Agent 岗必读**)
+> - `AGENT_TOOLS.md` —— Agent 7 个硬件工具的契约与设计取舍(**Agent 岗必读**)
 > - `AGENT_MULTISTEP_DEMO.md` —— 两幕演示设计 + 3 个缺陷复盘
 > - `AGENT_TEST_PLAN.md` —— 12 条用例 + 指标口径 + 故障注入
 > - `VOICE_ASR_PLAN.md` —— 语音链路(ASR/TTS/唤醒/编排)完整实测

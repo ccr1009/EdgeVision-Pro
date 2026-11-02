@@ -1,98 +1,114 @@
-# AGENTS.md — 仓库内协作须知(每次新对话请先读这个)
+# AGENTS.md — 仓库内协作须知（**一页指路**）
 
-> **权威版本在工作区根目录**:`D:\a研究生\项目\rk3588项目\AGENTS.md`(含完整 12 周路线、
-> 全部踩坑记录与协作偏好)。本文件是仓库内的精简副本,只保留开发时要立刻知道的事。
-> 两者冲突时**以根目录那份为准**。
+> **本文不是总纲。总纲在这里 ↓**
+>
+> # `D:\a研究生\项目\rk3588项目\AGENTS.md`（65 KB，权威版）
+>
+> 那份含完整 12 周路线、全部踩坑记录、协作偏好。**每次新对话先读它。**
+> 本文件只放三样东西：① 总纲在哪 ② 从哪儿读起 ③ 绝对不能违反的硬约束。
+>
+> **为什么改成这样（2026-11-02）**：本文件以前是一份 6.3 KB 的"精简副本"，
+> 试图把总纲浓缩下来。结果是**它自己会过期而没人发现**——例如它曾写着
+> "5 个硬件工具"，而 `lab/rkllm_embodied_agent.cpp` 里实际有 **7 个**
+> （多出 `get_patrol_status` 和 `control_service`）。同一份信息存两处，
+> 迟早有一处是错的。现在只留指路，不再复述。
 
 ---
 
-## 0. 一句话
-研究生,手上 **EVM3588-B(RK3588)**,做**端侧 AI 部署 / 边缘计算**方向的校招项目,
-同时用这块板子系统学 **Linux 应用层开发**。
+## 一、总纲在哪（含镜像）
 
-## 1. 硬件与环境(实测)
-| 项 | 值 |
-|---|---|
-| 开发板 | EVM3588-B(英码 EMA),SOM3588-B,8GB + 64GB eMMC |
-| 系统 | **Debian 11**,kernel **5.10.110** |
-| NPU | **驱动 v0.9.2 / 运行时 API 2.3.0**,3 核,主频 1.0 GHz |
-| 网络 | 有线,板子 IP 见本地私密记录(校园内网);WiFi 已关(掉线) |
-| SSH | `ssh <user>@<board-ip>`(**已配免密**,别名 `ssh rk3588`) |
-| 已知正常 | 内存 7.5Gi、eMMC 57.6G、RGA/MPP 正常、librknnrt.so 已装 |
+| 位置 | 说明 |
+| :--- | :--- |
+| `D:\a研究生\项目\rk3588项目\AGENTS.md` | **权威版，65 KB，改这份** |
+| `docs/workspace/AGENTS.md` | 上述文件的镜像（已脱敏，供备份/异地恢复用） |
 
-### 关键坑
-- **`/dev/rknpu` 不存在是正常的**:新版驱动走 DRM `/dev/dri/renderD129`。
-- **一律在板子上原生编译**:交叉编译有 glibc 风险(Ubuntu22 的 2.35 vs 板子 2.31)。
-- **板子系统在 eMMC,不需要刷机**;`.img` 是 RKFW 整包,不能直接拷 TF 卡。
-- **37ms/帧 ≠ NPU 慢**:实测 **49% 时间在 CPU**(YOLOv8 DFL 头 Transpose/Softmax/Reshape 回退),
-  NPU 主体只占 19.23 ms,三核并行时每核仅 49% 负载 → 优化先改模型导出,**别先做零拷贝**。
-- **Windows 侧跑远程命令**:复杂内联 `ssh 'a | b; c'` 的引号会被吃掉 → 写 `.sh` 脚本 scp 上去再 `bash`。
+> 工作区根目录**不是 git 仓库**，所以总纲本身靠 `docs/workspace/` 那个镜像做备份。
+> 改了正本记得同步镜像，见 `docs/workspace/INDEX.md`。
 
-## 2. 进度(2026-10-25)
+---
 
-> **现状一句话**:视觉推理链路 + 端侧大模型 Agent + 巡检守护**都已真实闭环跑通**,
-> 数字全部来自板端实测(口径见 `docs/BENCHMARKS.md`,局限一并写在里面)。
+## 二、接手时按这个顺序读
 
-- **学习线**:第 1~4 周(Linux 系统编程 / 多线程并发 / 网络与网关 / 服务化)全通关。
-- **推理链路(真实,无仿真)**:UVC 摄像头 MJPEG → **MPP 硬解**(p50 1.03ms,vs OpenCV 软解 7.76ms = **7.6×**)
-  → CPU 侧 CSC + letterbox → **3 个独立 context 绑 3 核 NPU 真并行** → DFL-Free 后处理 → TCP:9000 定长帧推流。
-  - 纯推理 **15.95 ms**(DFL 图手术前 37.19 ms,**−57%**);单帧全链路 20.58 ms / 48.6 FPS;
-    三核聚合 **59.3 FPS / 2.21×**(三核各约 49% 负载,**不是线性 3×**,别对外吹线性)。
-  - INT8 量化掉点用**真 mAP** 量化:COCO128 上 FP32 **0.6087** → INT8 **0.6002**(−1.4%)。
-  - 编译优化:CMake 一个多月来 **`CMAKE_BUILD_TYPE` 是空的**(一个 `-O` 都没有)→ 改默认 Release 后
-    CSC **1.549×**、全链路 **−27.4%**(含两组「不该变」的对照组,见 BENCHMARKS 2.8)。
-- **端侧具身 Agent(纯板端离线)**:RKLLM + Qwen3.5-2B(W8A8) → ReAct 多步 → 5 个硬件工具
-  (`get_system_health` / `get_led_status` / `control_led` / `get_vision_telemetry` / `get_patrol_events`)。
-  两幕演示端到端 106.5~112.2s、4~5 个不同工具、Observation 全合法 JSON。
-- **巡检守护(快慢双系统)**:独立 C++ 守护 5s 周期采温度/NPU/视觉帧,快层**不加载 LLM**(避免抢 NPU);
-  状态翻转才写事件日志 + `llm_pending.jsonl` 给慢层。真实闪灯验收用**占空比**判据(20.0% → 49.7%)。
-- **可靠性**:12 用例回归**全绿**(含故障注入停服务验视觉离线 + 自动恢复)。
-- **车载道路实景 3D 看板(2026-10-26,8090 端口)**:`edgevision_dashboard` 循环读 mp4 → 每帧 4~11 辆真实车
-  彩色 3D 线框 + 右上角 BEV 雷达 → 浏览器 MJPEG,实测 **24~27 fps** / 单帧 p50 **38.90 ms** / 1280×720 q80 144KB。
-  6 项端到端验收全绿(含 271 帧 271 个不同 crc32)。**不占摄像头**,可与 8080/9000 同跑。
+| 顺序 | 文件 | 为什么 |
+| :---: | :--- | :--- |
+| 1 | **根目录 `AGENTS.md`** | 总纲：我是谁 / 硬件 / 坑 / 已完成 / 路线 / 偏好 |
+| 2 | `docs/CURRENT_STATUS.md` | **现在能干什么** + 下一步 |
+| 3 | `docs/BENCHMARKS.md` | 所有数字的口径与复现命令（**引用数字只认这份**） |
+| 4 | `docs/ARCHITECTURE.md` | 三条技术线怎么串、端口进程表、资源争用 |
+| 5 | `lab/README.md` | 项目主线源码在哪（不是"练习目录"） |
 
-⚠️ **明确未实现(不要对外宣传)**:RGA 硬件 CSC / DMA-BUF 零拷贝 / RTSP-WebRTC / H.264-H.265 硬解
-/ ByteTrack 进 C++ 链路 / 整机功耗 / 看板跑满 30fps(实际 24~27)/ 目标跟踪(#idx 跨帧不连续)。完整清单见根目录 `README.md` 的「明确未实现」表。
+---
 
-## 3. 构建 / 运行
-```bash
-# 项目主程序(板端,先编译)
-ssh root@<board-ip>          # 板子 IP 见本地私密记录(校园内网)
-cd /root/edgevision/deploy/cpp && mkdir -p build_native && cd build_native
-cmake .. -DCROSS_COMPILE_RK3588=ON && make
-cd /root/edgevision && ./deploy/cpp/build_native/edgevision_pro_rknn
-
-# 性能探针(本仓库 deploy/cpp/bench/)
-B=/root/edgevision/deploy/cpp/3rdparty/rknn_api
-g++ -O2 -std=c++17 bench_npu.cpp -I$B/include -L$B/lib -lrknnrt -o bench_npu
-export LD_LIBRARY_PATH=$B/lib
-./bench_npu <model> 200        # 单核/三核/延迟分位数
-./bench_npu <model> 1 --perf   # 逐层耗时剖析
-```
-
-## 4. 文档
-- 根目录 `AGENTS.md` —— **权威版**,含完整路线与坑
-- `docs/CURRENT_STATUS.md` —— 状态快照
-- `docs/BENCHMARKS.md` —— 板端实测数据与复现命令
-- `docs/LEARNING_PLAN_4WEEKS.md` —— 12 周路线
-
-## 4.5 目录速查(2026-11-02 抢救板端孤本后更新)
+## 三、目录速查
 
 | 目录 | 放什么 | 关键提醒 |
-|---|---|---|
-| `deploy/cpp/` | 视觉引擎 CMake 工程(6 个 target) | **不含 9000 网关** |
-| `lab/` | Agent、语音、巡检守护、**9000 网关**源码 | 项目主线在这里,不是"练习" |
-| `lab/tools/` | 51 个攻坚工具/探针源码 | 从板端抢救回来,含 RGA 失败尝试 |
-| `lab/scripts/` | 25 个一次性调试脚本 | 价值低,记录排查过程 |
-| `learn/` | **第 1~4 周学习线代码(26 个)** | 与 `docs/LEARNING_PLAN_4WEEKS.md` 对应 |
-| `esp32_gimbal/` | ESP-IDF 云台工程 + 8 个 host 脚本 | 独立工程,消费 9000 的 248B 帧 |
-| `stereo3d/` | 双目 3D(自带 CMake) | 与主仓零代码依赖,只抢摄像头 |
-| `gateway/ bev/ pipeline/ track/` | 早期 Python 原型(2026-09) | 四者互相 import,已不是主线 |
+| :--- | :--- | :--- |
+| `deploy/cpp/` | 视觉引擎 CMake 工程（6 个 target） | **不含 9000 网关** |
+| `lab/` | Agent、语音、巡检守护、**9000 网关**源码 | 项目主线在这里，不是"练习" |
+| `lab/tools/` | 攻坚工具/探针源码（25 个 .cpp + 25 个 .sh） | 从板端抢救回来，含 RGA **失败**尝试 |
+| `lab/scripts/` | 26 个调试脚本 + `board_root/` 15 个 | 价值低，记录排查过程 |
+| `learn/` | **第 1~4 周学习线代码（26 个）** | 与 `docs/LEARNING_PLAN_4WEEKS.md` 对应 |
+| `esp32_gimbal/` | ESP-IDF 云台工程 + 8 个 host 脚本 | 独立工程，消费 9000 的 248B 帧 |
+| `stereo3d/` | 双目 3D（自带 CMake） | 与主仓零代码依赖，**只抢摄像头** |
+| `tools/` | 根 `_tools/` 的脱敏镜像 | 用前设 `BOARD_IP` / `BOARD_PASSWORD` |
+| `docs/workspace/` | 根目录 4 份文档镜像 | 只读备份，改正本 |
+| `gateway/ bev/ pipeline/ track/` | 早期 Python 原型（2026-09） | 四者互相 import，已不是主线 |
 
-> **本次改动背景**:2026-11-02 发现板端 `/root/lab/` 有 **102 个源码文件仓库里没有**,
-> 含整个学习线 + RGA/MPP 攻坚记录。已全部拉回(md5 逐文件校验 102/102 一致),
-> 分别落到 `learn/`、`lab/tools/`、`lab/scripts/`。详见各目录 README。
+---
 
-## 5. 协作偏好
-说中文;简洁直接可操作;用户是学生,**学习场景让他自己敲代码、AI 当私教陪同排错**;
-校招项目要**真实、可量化、能讲清**,警惕吹嘘的数字;买硬件要给明确型号+价格+接口。
+## 四、绝对不能违反的（这几条会真的出事）
+
+### ① 不许用假数据冒充结果
+
+演示/汇报/截图里任何数字必须来自真实链路。`frame_id % N` 造偏移、硬编码置信度、
+空检测补框 —— 这类代码一次都不行。**本项目踩过两次。**
+
+### ② 只在板子上原生编译
+
+交叉编译会撞 glibc（Ubuntu22 的 2.35 vs 板子 Debian11 的 2.31）。
+
+### ③ 板子 IP 与密码不入库
+
+仓库是 **public**。2026-10 曾因 `AGENTS.md` / `CURRENT_STATUS.md` 里写着板子 root 密码
+而做过两次 `git filter-branch`。**写文档用 `<board-ip>` 占位。**
+
+### ④ 别用 PowerShell 读写含中文的 UTF-8 源文件
+
+`Set-Content -Encoding UTF8` / `Out-File` 会加 BOM，中文会坏、commit message 会乱码。
+用编辑器改，或脚本里一律 `UTF8Encoding($false)`。
+
+### ⑤ Windows 侧别用复杂内联 ssh
+
+`ssh root@<ip> 'a | b; c'` 的引号会被 PowerShell 吃掉 → **写成 `.sh` 脚本 scp 上去再 `bash`**。
+
+### ⑥ 资源互斥：这些同时开会打架
+
+| 抢什么 | 后果 | 现状 |
+| :--- | :--- | :--- |
+| NPU IOMMU 4 GiB | 第 2 个 rkllm 必 `errno 14` | ✅ `voice-gateway.service` 有 `Conflicts=edgevision.service` |
+| `/dev/video81` | 8080 预览 × 9000 网关花屏 | ⚠️ 靠人工记忆 |
+| `/dev/video83` | stereo3d 右目 × 看板 `--cam` | ✅ 2026-11-02 已去掉了看板的 `--cam` |
+| 麦克风 `hw:0,0` | 后来者 `exit 255` 无限重启 | ✅ unit 里 `fuser -k -9` 兜底 |
+
+> **能同时跑**：8090 看板（mp4 模式）+ 9000 + 8080；巡检守护 + 9000；8088 + 9000；
+> `tts_daemon` + 任何（它不碰 ALSA）。
+> **有代价**：语音网关 × 9000 同跑时 Agent 单轮 **10 s → 39 s**。
+
+---
+
+## 五、协作偏好（全文见总纲第 7 节）
+
+说中文；简洁直接可操作；用户是学生、嵌入式新手，解释用**大白话+类比**；
+**学习场景让用户自己敲代码、AI 当私教陪同排错**，不要直接替他把代码全写好；
+校招项目要**真实、可量化、能讲清**，警惕吹嘘的数字；买硬件给明确型号+价格+接口。
+
+---
+
+## 六、改完实质工作要同步的文档
+
+1. `docs/CURRENT_STATUS.md` —— 现在能干什么
+2. 根目录 `AGENTS.md` 第 3 节 —— 一条带证据的 ✅
+3. `docs/BENCHMARKS.md` —— 数字 + 口径
+
+`TROUBLESHOOTING.md` 只记「面试能讲」的问题，过三问才写全文：
+根因能讲底层原理？排查有方法论？有可量化证据？
