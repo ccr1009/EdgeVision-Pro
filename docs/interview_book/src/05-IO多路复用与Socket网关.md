@@ -43,7 +43,7 @@
 
 一连接一线程的问题不是我推理出来的，是 D19 反例实验打出来的：阻塞版 `accept` 把 AI 推理主循环整个冻住。改成非阻塞后，没连接就立刻返回 `-1` + `errno = EAGAIN`，主循环继续转，但自己轮询就是空转烧 CPU，所以还需要多路复用：让内核在真有事件时才叫醒你。
 
-**如果被追问「那生产网关用的是 epoll 吗？」：** 不是，这是我要主动交代的边界。生产网关（`lab/vision/w4_edgevision_gateway.cpp`）推流线程用 `select` 等新连接、超时 1 秒，`accept` 后进内层循环发帧，**一次只服务一个上位机**。epoll 的 ET 单线程反应堆是我在 D24 单独做的实验（`lab/drafts/w4_d24_epoll.cpp`），**没接进生产链路**。所以我说的是"我手写过 epoll 反应堆"，不是"我用它扛过生产流量"。
+**如果被追问「那生产网关用的是 epoll 吗？」：** 不是，这是我要主动交代的边界。生产网关（`lab/vision/edgevision_gateway.cpp`）推流线程用 `select` 等新连接、超时 1 秒，`accept` 后进内层循环发帧，**一次只服务一个上位机**。epoll 的 ET 单线程反应堆是我在 D24 单独做的实验（`lab/drafts/w4_d24_epoll.cpp`），**没接进生产链路**。所以我说的是"我手写过 epoll 反应堆"，不是"我用它扛过生产流量"。
 
 **如果被追问「为什么生产上用 select 就够了？」：** 我只有两个 fd 要等，用哪个接口没性能差别；用它甚至不是为了多路复用，是**借 1 秒超时让主循环周期性检查 `g_running`，收到 SIGTERM 能干净收尾**。
 
@@ -209,7 +209,7 @@ while (received < sizeof(res)) {
 
 **一句话答案：** 因为上个进程退出时，那条连接可能还停在 `TIME_WAIT`（主动关闭方要等 2MSL），端口被内核占着；`SO_REUSEADDR` 允许 `bind` 一个处于 `TIME_WAIT` 的端口，只是让**重启不用等**，不代表端口能被独占。
 
-**展开讲：** 这是我在 `stereo3d/src/http_server.cpp` 里写死的第二步，注释就写在我自己的代码里：「程序刚被 Ctrl-C 时 TCP 处于 `TIME_WAIT`，不设这个要等 60 秒才能重启同一个端口——调试时极其难受。」所以 `socket` 之后、`bind` 之前先来一句 `setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))`。同样的三行我在 `lab/vision/w4_edgevision_gateway.cpp`、`lab/drafts/w4_d24_epoll.cpp`、`lab/agent/edgevision_agent_server.cpp`、`lab/vision/cam_stream_server.cpp` 里都写了——**每个要 listen 的服务都该有这两行，这是一个不需要思考的习惯**。
+**展开讲：** 这是我在 `stereo3d/src/http_server.cpp` 里写死的第二步，注释就写在我自己的代码里：「程序刚被 Ctrl-C 时 TCP 处于 `TIME_WAIT`，不设这个要等 60 秒才能重启同一个端口——调试时极其难受。」所以 `socket` 之后、`bind` 之前先来一句 `setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))`。同样的三行我在 `lab/vision/edgevision_gateway.cpp`、`lab/drafts/w4_d24_epoll.cpp`、`lab/agent/edgevision_agent_server.cpp`、`lab/vision/cam_stream_server.cpp` 里都写了——**每个要 listen 的服务都该有这两行，这是一个不需要思考的习惯**。
 
 `TIME_WAIT` 为什么必须存在，两句话说清：主动关闭方要等 2MSL，一是保证最后那个 ACK 丢了还能重传（对端会重发 FIN），二是让这条连接在网络里残留的重复包彻底消失，不然它们可能串到端口复用的新连接上。所以 `TIME_WAIT` 不是 bug，是保护；`SO_REUSEADDR` 也不是"关掉保护"，它只放开"绑定一个还处于 `TIME_WAIT` 的端口"这一件事。
 

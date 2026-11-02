@@ -74,7 +74,7 @@
 | `w3_d20_real_npu_gateway.cpp` | 网关 + 真 NPU 推理 | 从练习走向项目 |
 
 > `w3_d20_real_npu_gateway.cpp` 是 **9000 推流网关的前身**。
-> 主线版本后来演进成 `lab/vision/w4_edgevision_gateway.cpp`（即 `edgevision.service` 跑的那个）。
+> 主线版本后来演进成 `lab/vision/edgevision_gateway.cpp`（即 `edgevision.service` 跑的那个）。
 
 ### w4_服务化（第 4 周）
 
@@ -86,7 +86,7 @@
 > SIGINT/SIGTERM + 全链路屏蔽 SIGPIPE」。实测这个 53 行的文件里 **`sigaction` 出现 0 次、
 > `SIGPIPE` 出现 0 次**，只有 `daemon(0,0)`。
 > 信号处理那部分可能在 `lab/drafts/w4_d23_signal.cpp`（主线文件，不在这里），SIGPIPE 则是在
-> `lab/vision/w4_edgevision_gateway.cpp` 里。**讲学习线时以文件实际内容为准。**
+> `lab/vision/edgevision_gateway.cpp` 里。**讲学习线时以文件实际内容为准。**
 
 ---
 

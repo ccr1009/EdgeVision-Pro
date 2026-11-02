@@ -2,6 +2,15 @@
 
 **这里是唯一的源码目录。** 板子上的同名文件都是部署副本，改板子上的不算数。
 
+> ⚠️ **目录名叫 `lab`，但放的是生产线代码，不是练习。**
+>
+> `lab` 是第 1 周四开的一个名字，后来 9000 网关、Agent、语音、巡检守护
+> 四个**正在开机自启的服务**都长了进来，名字就名不副实了。
+> **没有改名**，原因写在第七节：板端 `/root/lab/` 是两个 systemd unit 的
+> `ExecStart` 路径，仓库改名会和板子对不上，风险大于收益。
+>
+> 第 1~4 周的**真·练习代码**在 [`../learn/`](../learn/)，那里才是"learning lab"。
+
 > 2026-11-02 重排：原先 72 个文件全部平铺在 `lab/` 根下，找东西靠翻。
 > 现在按职责分成 8 个子目录，**顶层只剩这份 README**。
 
@@ -52,8 +61,8 @@
 
 | 文件 | 是什么 |
 | :--- | :--- |
-| `w4_edgevision_gateway.cpp` | **9000 TCP 定长帧推流网关**（248 B/帧），`edgevision.service` 跑的就是它 |
-| `w4_edgevision_preview_real.cpp` | 8080 MJPEG 实时预览（检测框 + 3D 棱边 + BEV 小地图） |
+| `edgevision_gateway.cpp` | **9000 TCP 定长帧推流网关**（248 B/帧），`edgevision.service` 跑的就是它 |
+| `edgevision_preview_real.cpp` | 8080 MJPEG 实时预览（检测框 + 3D 棱边 + BEV 小地图） |
 | `cam_stream_server.cpp` | 8080 的另一实现（裸 V4L2，学习期） |
 | `patch_gateway_dflfree.py` | 把 DFL-Free 后处理打进网关的补丁（历史工具） |
 
@@ -62,7 +71,11 @@
 > 编译，并且 `#include "rknn_engine_dfl_free.h"` + `-I/root/edgevision/deploy/cpp/include`，
 > **源码级依赖 `deploy/cpp`**。改网关时两边都要看。
 >
-> 文件名带 `w4_` 是历史原因（第 4 周做的），**但它是项目主线，不是练习**。
+> **2026-11-02 已去掉 `w4_` 前缀**（原名 `w4_edgevision_gateway.cpp`）：它第 4 周写，
+> 但早已是项目主线，不是练习。改名后仓库里叫 `edgevision_gateway.cpp`。
+> **板端仍叫 `w4_edgevision_gateway.cpp` / 二进制 `w4_edgevision_gateway` 不变**——
+> 因为 `edgevision.service` 的 `ExecStart` 和多个排查脚本的 `pgrep -f` 依赖这个名字。
+> 改代码后要用 `scp lab/vision/edgevision_gateway.cpp rk3588:/root/lab/w4_edgevision_gateway.cpp`。
 
 ### `tests/` — 自测工装与客户端（13 个）
 
@@ -214,8 +227,11 @@ md5 不一致 = 有人在板上直接改了代码，或者本地改了没部署�
 1. **`lab/` 这名字名不副实**：9000 网关、Agent、语音、巡检守护四个**在跑的服务**都在这里，
    而 `deploy/cpp`（听名字才是"正式代码"）反而不含网关。**暂时不改名**——`lab/` 在全仓被
    引用 116 次，改名收益不抵成本。
-2. **`w4_` 前缀会误导**：`w4_edgevision_gateway.cpp` 是项目主线的 9000 网关，
-   不是第 4 周练习。练习文件在 `learn/w4_服务化/`。
+2. ~~**`w4_` 前缀会误导**~~ **已在 2026-11-02 修掉**：`w4_edgevision_gateway.cpp` →
+   `edgevision_gateway.cpp`，`w4_edgevision_preview_real.cpp` → `edgevision_preview_real.cpp`。
+   板端文件名保持 `w4_` 不变（unit 与 pgrep 依赖）。
+   注意 `drafts/` 里还有 `w4_d23_signal.cpp`、`w4_d24_epoll.cpp`、`w4_edgevision_preview.cpp`
+   ——**那几个是真的第 4 周练习与旧版本**，前缀是对的。
 3. **`deploy.sh` 覆盖不全**：只同步 Agent 与语音网关，其余各有自己的 build 脚本。
 4. **248 B 帧协议常量重复 3 份**：`agent/rkllm_embodied_agent.cpp`（约 539~554 行）、
    `esp32_gimbal/host/gimbal_control.py`（16~22 行）、`agent/edgevision_patrol_daemon.cpp`

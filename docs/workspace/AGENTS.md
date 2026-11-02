@@ -169,7 +169,7 @@ D:\a研究生\项目\rk3588项目\
     - 数据集:128 张带标注 / **929 个 GT 框 / 71 个类别**;结果 **FP32 mAP@0.5 = 0.6087,INT8 = 0.6002,绝对掉点 0.85 个百分点(−1.4%)**。
     - 局限(引用时必须一起说):COCO128 是 YOLOv8n 的**训练子集**,绝对 mAP 偏乐观,不能对外说"在 COCO val2017 上 0.61";但 FP32/INT8 用同一批图,"见过"因素两边抵消,相对掉点成立。
     - 详见 `docs/BENCHMARKS.md` **2.4 节**(含数据集来源、口径、复现命令)。
-  - ✅ **真实检测框网页预览**:`lab/vision/w4_edgevision_preview_real.cpp` 取代原来画假框的 `w4_edgevision_preview.cpp`(旧版那两个 "Person 96%" / "Object 91%" 是硬编码装饰,且模型跑完 `want_float=0` 拿完就 release,检测结果从未被使用)。
+  - ✅ **真实检测框网页预览**:`lab/vision/edgevision_preview_real.cpp` 取代原来画假框的 `w4_edgevision_preview.cpp`(旧版那两个 "Person 96%" / "Object 91%" 是硬编码装饰,且模型跑完 `want_float=0` 拿完就 release,检测结果从未被使用)。
     - HTTP 路由:`GET /` 网页外壳(深色、LIVE 指示灯、断流自动重连)、`GET /stream` MJPEG 流、`GET /snapshot` 单帧 JPEG;浏览器直接开 **`http://<板子IP>:8080`**。
     - 预处理改成 **letterbox**,HUD 实时显示 `NPU xx ms + Decode xx ms + FPS + obj 数`;离线验证工具 `deploy/cpp/bench/preview_detect.cpp`。
     - 实测 HUD:`NPU 15.1 ms + Decode 1.2 ms | 20.0 FPS`(~34ms 耗在 MJPG 解码/缩放/画图/JPEG 编码,**瓶颈已不在 NPU**)。
@@ -178,7 +178,7 @@ D:\a研究生\项目\rk3588项目\
     - 推流协议升级为 248 字节定长帧(`DetectionHeader` 8B + 10x24B `BBox`),上位机 `pc_client_viewer.py` 联动对齐 COCO 80 类解析与坐标映射。
     - 根治背压堆积缺陷:推流队列加 `size>=2` 丢旧与建联瞬间清空存量,杜绝重连 10000+ FPS 历史积压雪崩。实测上位机稳定接收 **19.2 FPS** 纯真实活流。
   - ✅ **摄像头 20fps 之谜已破(2026-10-24)**:三层排查证明**根因是代码从没设 `cap.set(CAP_PROP_FPS,30)`**,V4L2 默认协商到 20fps,**不是硬件上限**。
-    - 第 1 层:`v4l2-ctl --list-formats-ext` 显示 720p MJPG **明确支持 30fps**;第 2 层:定位三处源码(`lab/vision/w4_edgevision_gateway.cpp:133-134`、`lab/vision/w4_edgevision_preview_real.cpp:259-260`、`lab/drafts/bench_cam_fps.cpp:11-13`)**都只设了 FOURCC+分辨率,没有一处设帧率**;第 3 层:补一行后做请求值/回读值/实测值三方对照。
+    - 第 1 层:`v4l2-ctl --list-formats-ext` 显示 720p MJPG **明确支持 30fps**;第 2 层:定位三处源码(`lab/vision/edgevision_gateway.cpp:133-134`、`lab/vision/edgevision_preview_real.cpp:259-260`、`lab/drafts/bench_cam_fps.cpp:11-13`)**都只设了 FOURCC+分辨率,没有一处设帧率**;第 3 层:补一行后做请求值/回读值/实测值三方对照。
     - **实测**:cam1 `/dev/video81` + cam2 `/dev/video83` 各跑 400 帧,**33.33 ms/帧 = 30.0 fps,p95 33.50ms,零抖动**(原 50.03ms / 20.0fps)。
     - ⚠️ **第二层坑**:`cap.get(CAP_PROP_FPS)` **回读值会骗人**——请求 25fps 回读 `25.00`,实测仍 20.0fps。回读是软件期望值,不是硬件节奏。
     - **连带推翻**:BENCHMARKS 2.5.8 的「物理上限 20fps」结论已标注修正(新增 2.5.9);**MPP 硬解/硬编优化因此重新成立**——处理 34ms vs 出帧周期 33.3ms 刚好卡临界,省 11ms 才能吃下 30fps。

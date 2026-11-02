@@ -541,8 +541,8 @@ v4l2-ctl -d /dev/video81 --get-parm
 
 | 文件 | 行号 | 设了什么 |
 | :--- | :--- | :--- |
-| `lab/vision/w4_edgevision_gateway.cpp` | 133-134 | 只设 FOURCC + 分辨率 |
-| `lab/vision/w4_edgevision_preview_real.cpp` | 259-260 | 只设 FOURCC + 分辨率 |
+| `lab/vision/edgevision_gateway.cpp` | 133-134 | 只设 FOURCC + 分辨率 |
+| `lab/vision/edgevision_preview_real.cpp` | 259-260 | 只设 FOURCC + 分辨率 |
 | `lab/drafts/bench_cam_fps.cpp` | 11-13 | 只设 FOURCC + 分辨率 |
 
 `bench_cam_fps.cpp:15` 的 `printf("驱动报告的 FPS")` 读的是**协商后的当前值 20**，
@@ -917,7 +917,7 @@ done
 #### 2.9.1 为什么要做
 
 2.5 节实测：`cv::imencode(".jpg", ..., quality=80)` 耗时 **7.1~7.2 ms，占单帧 14%**
-（`edgevision-rk3588/lab/w4_edgevision_preview_real.cpp:346-347`）。既然 MPP **硬解**能做到
+（`edgevision-rk3588/lab/edgevision_preview_real.cpp:346-347`）。既然 MPP **硬解**能做到
 p50 1.03 ms（7.6× 于软解，见 2.6 节），**硬编**理论上也该快——路线图里因此写了"MPP 硬编省 7.2ms"。
 
 #### 2.9.2 结论先行

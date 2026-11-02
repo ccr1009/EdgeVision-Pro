@@ -134,7 +134,7 @@ ch   = nhwc ? a.dims[a.n_dims - 1] : a.dims[a.n_dims - 2];
 `rknn_outputs_get` 拿完立刻 `release`，**检测结果从头到尾没被使用过**。
 
 **排查（第二处，9000 网关）**：修完预览、准备接新模型时，发现
-`lab/vision/w4_edgevision_gateway.cpp` 215~222 行是**同一个毛病的另一份拷贝**：
+`lab/vision/edgevision_gateway.cpp` 215~222 行是**同一个毛病的另一份拷贝**：
 
 ```cpp
 // 构造检测结果（注入动态实测坐标）
@@ -413,7 +413,7 @@ bash build_w4_gateway.sh    # 立刻通过
    1280x720 MJPG 下明确列出 `Interval: Discrete 0.033s (30.000 fps)`。
    **硬件本来就支持 30fps，「物理上限 20fps」这个前提当场就塌了。**
 2. **再查为什么协商成 20**——定位源码：
-   `lab/vision/w4_edgevision_gateway.cpp:133-134`、`lab/vision/w4_edgevision_preview_real.cpp:259-260`、
+   `lab/vision/edgevision_gateway.cpp:133-134`、`lab/vision/edgevision_preview_real.cpp:259-260`、
    `lab/drafts/bench_cam_fps.cpp:11-13`，三处**都只设了 `FOURCC` + `WIDTH/HEIGHT`，没有一处设 `CAP_PROP_FPS`**。
    V4L2 拿不到请求就沿用设备默认档（20fps）。
 3. **显式请求验证**——补一行 `cap.set(cv::CAP_PROP_FPS, 30)` 写对照工具 `bench_cam_fps2.cpp`，

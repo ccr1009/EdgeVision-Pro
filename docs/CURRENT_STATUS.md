@@ -160,7 +160,7 @@ bash /root/run_agent.sh --no-restore       # 用完不自动恢复网关
 ## 第二阶段进展(第 5~7 周):端侧推理深度剖析与模型优化 —— 核心已完成
 
 ### ✅ 1. 真实画框与后处理(所见即所得)—— 完成，且做成了网页实时预览
-- `lab/vision/w4_edgevision_preview_real.cpp`:用新模型 + `dflfree::decode` 画**真实检测框**。
+- `lab/vision/edgevision_preview_real.cpp`:用新模型 + `dflfree::decode` 画**真实检测框**。
   原来 `w4_edgevision_preview.cpp` 里那两个 "Person 96%" / "Object 91%" 是**写死的假框**，且模型跑完 `want_float=0` 拿完就 release，检测结果从未被使用。
 - 浏览器直接看:`http://<board-ip>:8080`（`/` 网页外壳、`/stream` MJPEG、`/snapshot` 单帧）
 - 预处理改为 letterbox；HUD 实时显示 `NPU xx ms + Decode xx ms + FPS + obj 数`
